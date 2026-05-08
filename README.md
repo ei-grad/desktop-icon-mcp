@@ -12,10 +12,10 @@ send standard ListView messages to move icons. No packages are required.
 - `diagnose_desktop_icon_host` - inspect Progman/WorkerW host windows if icon discovery fails.
 - `list_desktop_displays` - list active monitors, primary screen bounds, virtual screen bounds, and monitor work areas.
 - `move_desktop_icon` - move one icon by `index` or exact `name`.
-- `arrange_desktop_icons_grid` - arrange all icons in a grid.
+- `arrange_desktop_icons_grid` - arrange all icons in a grid, with stabilization passes and verification.
 - `set_desktop_snap_to_grid` - toggle ListView snap-to-grid.
 - `save_desktop_icon_layout` - save the current layout to JSON.
-- `restore_desktop_icon_layout` - restore a saved layout by icon name.
+- `restore_desktop_icon_layout` - restore a saved layout by icon name, with stabilization passes and verification.
 
 ## Codex config
 
@@ -45,7 +45,7 @@ Restart Codex after opening this project so it loads the MCP server. Then you ca
 
 ## Deterministic optimizer
 
-`optimize_desktop_islands.js` converts abstract layout preferences into a deterministic layout JSON. It does not move icons by itself; use `restore_desktop_icon_layout` after reviewing the output.
+`optimize_desktop_islands.js` converts abstract layout preferences into a deterministic layout JSON. It does not move icons by itself; use `restore_desktop_icon_layout` after reviewing the output. Layouts saved by `save_desktop_icon_layout` include grid metadata that the optimizer reuses.
 
 ```powershell
 node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-islands.json --mode islands
@@ -78,14 +78,21 @@ The preference file can override block anchors, directions, widths, priorities, 
 }
 ```
 
+For sparse saved layouts, pass grid bounds explicitly so corner-based modes use the intended desktop extent rather than only the currently occupied icon coordinates:
+
+```powershell
+node optimize_desktop_islands.js --mode corners --columns 12 --rows 9 --origin-x 28 --origin-y 2 --spacing-x 152 --spacing-y 222
+```
+
 ## Notes
 
 - Run Codex in the same Windows user session where Explorer owns the desktop.
 - If Windows has "Auto arrange icons" enabled, Explorer can immediately move
-  icons again. Disable it from the desktop context menu before using exact
-  placement.
+  icons again. `restore_desktop_icon_layout` and `arrange_desktop_icons_grid`
+  temporarily disable it by default before exact placement.
 - Coordinates are ListView coordinates, not DPI-independent CSS pixels.
 - `describe_desktop_icon_grid` reports both viewport rows/columns and icon extents. On multi-monitor or recently disconnected-monitor setups, Explorer can keep icon coordinates outside the current primary screen bounds, so icon extents are often more useful than `SM_CXSCREEN`/`SM_CYSCREEN` alone.
+- `restore_desktop_icon_layout` and `arrange_desktop_icons_grid` default to suppressing redraw, temporarily disabling ListView Auto Arrange, running up to 3 placement passes, then verifying the final positions. If `auto_arrange_was_enabled` is true, exact placement would normally be unstable; by default the tool leaves Auto Arrange disabled after a successful exact placement. Pass `restore_auto_arrange: true` only if you want Explorer to resume automatic placement afterward.
 - Restoring a layout matches icons by exact visible name. If there are duplicate
   names, use `move_desktop_icon` with an index for exact one-off moves.
 - MCP server changes require a commit and a Codex restart before the running session sees updated tool code or schemas.

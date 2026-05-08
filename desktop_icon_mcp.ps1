@@ -24,8 +24,14 @@ public static class DesktopIcons {
     const int LVM_GETITEMSPACING = LVM_FIRST + 51;
     const int LVM_GETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 55;
     const int LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54;
+    const int GWL_STYLE = -16;
+    const int LVS_AUTOARRANGE = 0x0100;
     const int LVS_EX_SNAPTOGRID = 0x00080000;
     const int LVIF_TEXT = 0x0001;
+    const int WM_SETREDRAW = 0x000B;
+    const int RDW_INVALIDATE = 0x0001;
+    const int RDW_ALLCHILDREN = 0x0080;
+    const int RDW_UPDATENOW = 0x0100;
     const int MAX_TEXT = 512;
     const int SMTO_NORMAL = 0x0000;
     const int SM_CXSCREEN = 0;
@@ -138,6 +144,15 @@ public static class DesktopIcons {
 
     [DllImport("user32.dll")]
     static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll")]
+    static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     static extern IntPtr SendMessageTimeout(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam, int flags, int timeout, out IntPtr result);
@@ -449,6 +464,27 @@ public static class DesktopIcons {
         int newStyle = enabled ? (style | LVS_EX_SNAPTOGRID) : (style & ~LVS_EX_SNAPTOGRID);
         SendMessage(hwnd, LVM_SETEXTENDEDLISTVIEWSTYLE, (IntPtr)LVS_EX_SNAPTOGRID, (IntPtr)newStyle);
     }
+
+    public static bool SnapToGrid(IntPtr hwnd) {
+        int style = SendMessage(hwnd, LVM_GETEXTENDEDLISTVIEWSTYLE, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        return (style & LVS_EX_SNAPTOGRID) != 0;
+    }
+
+    public static bool AutoArrange(IntPtr hwnd) {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        return (style & LVS_AUTOARRANGE) != 0;
+    }
+
+    public static void SetAutoArrange(IntPtr hwnd, bool enabled) {
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        int newStyle = enabled ? (style | LVS_AUTOARRANGE) : (style & ~LVS_AUTOARRANGE);
+        if (newStyle != style) SetWindowLong(hwnd, GWL_STYLE, newStyle);
+    }
+
+    public static void SetRedraw(IntPtr hwnd, bool enabled) {
+        SendMessage(hwnd, WM_SETREDRAW, enabled ? (IntPtr)1 : IntPtr.Zero, IntPtr.Zero);
+        if (enabled) RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
 }
 "@
 
@@ -476,6 +512,202 @@ function Get-ArgValue($Arguments, [string]$Name, $Default = $null) {
         return $Arguments.$Name
     }
     return $Default
+}
+
+function Get-BoolArg($Arguments, [string]$Name, [bool]$Default) {
+    $value = Get-ArgValue $Arguments $Name $null
+    if ($null -eq $value) { return $Default }
+    if ($value -is [bool]) { return [bool]$value }
+    if ($value -is [string]) { return [bool]::Parse($value) }
+    return [bool]$value
+}
+
+function New-IconLookup($Icons) {
+    $byName = @{}
+    $byIndex = @{}
+    $nameCounts = @{}
+    $duplicateKeys = @{}
+    $duplicates = New-Object System.Collections.Generic.List[string]
+    foreach ($icon in $Icons) {
+        $key = ([string]$icon.name).ToLowerInvariant()
+        $byIndex[[int]$icon.index] = $icon
+        if (-not $nameCounts.ContainsKey($key)) { $nameCounts[$key] = 0 }
+        $nameCounts[$key] = [int]$nameCounts[$key] + 1
+        if ($byName.ContainsKey($key)) {
+            if (-not $duplicateKeys.ContainsKey($key)) {
+                $duplicates.Add([string]$icon.name)
+                $duplicateKeys[$key] = $true
+            }
+            continue
+        }
+        $byName[$key] = $icon
+    }
+    return [ordered]@{ by_name = $byName; by_index = $byIndex; name_counts = $nameCounts; duplicates = $duplicates }
+}
+
+function Test-IconPositionMatch($Current, $Target, [int]$Tolerance) {
+    return ([Math]::Abs([int]$Current.x - [int]$Target.x) -le $Tolerance) -and ([Math]::Abs([int]$Current.y - [int]$Target.y) -le $Tolerance)
+}
+
+function Test-HasProperty($Object, [string]$Name) {
+    return ($null -ne $Object) -and ($Object.PSObject.Properties.Name -contains $Name)
+}
+
+function Add-UniqueString($List, $Seen, [string]$Value) {
+    $key = $Value.ToLowerInvariant()
+    if (-not $Seen.ContainsKey($key)) {
+        $List.Add($Value)
+        $Seen[$key] = $true
+    }
+}
+
+function Resolve-PlacementIcon($Target, $Lookup, [bool]$UseIndexIfAvailable) {
+    $name = [string]$Target.name
+    $key = $name.ToLowerInvariant()
+    $hasIndex = Test-HasProperty $Target "index"
+    if ($UseIndexIfAvailable -and $hasIndex) {
+        $index = [int]$Target.index
+        if ($Lookup.by_index.ContainsKey($index)) {
+            $indexed = $Lookup.by_index[$index]
+            if ([string]$indexed.name -eq $name) {
+                return [ordered]@{ status = "ok"; icon = $indexed }
+            }
+        }
+    }
+    if (-not $Lookup.by_name.ContainsKey($key)) {
+        return [ordered]@{ status = "missing"; icon = $null }
+    }
+    if ($Lookup.name_counts.ContainsKey($key) -and [int]$Lookup.name_counts[$key] -gt 1) {
+        return [ordered]@{ status = "duplicate"; icon = $null }
+    }
+    return [ordered]@{ status = "ok"; icon = $Lookup.by_name[$key] }
+}
+
+function Test-DesktopIconPlacement($Targets, $Lookup, [int]$Tolerance, [bool]$UseIndexIfAvailable) {
+    $mismatches = New-Object System.Collections.Generic.List[object]
+    $missing = New-Object System.Collections.Generic.List[string]
+    $duplicates = New-Object System.Collections.Generic.List[string]
+    $missingKeys = @{}
+    $duplicateKeys = @{}
+    foreach ($target in $Targets) {
+        $resolved = Resolve-PlacementIcon $target $Lookup $UseIndexIfAvailable
+        if ($resolved.status -eq "missing") {
+            Add-UniqueString $missing $missingKeys ([string]$target.name)
+            continue
+        }
+        if ($resolved.status -eq "duplicate") {
+            Add-UniqueString $duplicates $duplicateKeys ([string]$target.name)
+            continue
+        }
+        $current = $resolved.icon
+        if (-not (Test-IconPositionMatch $current $target $Tolerance)) {
+            $mismatches.Add([ordered]@{
+                name = [string]$target.name
+                index = if (Test-HasProperty $target "index") { [int]$target.index } else { $null }
+                expected_x = [int]$target.x
+                expected_y = [int]$target.y
+                actual_x = [int]$current.x
+                actual_y = [int]$current.y
+            })
+        }
+    }
+    return [ordered]@{ missing = $missing; duplicates = $duplicates; mismatches = $mismatches }
+}
+
+function Invoke-DesktopIconPlacement($hwnd, $Targets, $Arguments, [bool]$UseIndexIfAvailable = $false) {
+    $targets = @($Targets)
+    $passes = [Math]::Max(1, [int](Get-ArgValue $Arguments "passes" 3))
+    $settleMs = [Math]::Max(0, [int](Get-ArgValue $Arguments "settle_ms" 250))
+    $tolerance = [Math]::Max(0, [int](Get-ArgValue $Arguments "tolerance" 2))
+    $verify = Get-BoolArg $Arguments "verify" $true
+    $disableRedraw = Get-BoolArg $Arguments "disable_redraw" $true
+    $disableAutoArrange = Get-BoolArg $Arguments "disable_auto_arrange" $true
+    $restoreAutoArrange = Get-BoolArg $Arguments "restore_auto_arrange" $false
+    $autoArrangeWasEnabled = [DesktopIcons]::AutoArrange($hwnd)
+    $redrawDisabled = $false
+    $autoArrangeDisabled = $false
+    $autoArrangeRestored = $false
+    $placementSucceeded = $false
+    $moved = New-Object System.Collections.Generic.List[object]
+    $missing = New-Object System.Collections.Generic.List[string]
+    $duplicateNames = New-Object System.Collections.Generic.List[string]
+    $mismatches = New-Object System.Collections.Generic.List[object]
+    $completedPasses = 0
+
+    try {
+        if ($disableAutoArrange -and $autoArrangeWasEnabled) {
+            [DesktopIcons]::SetAutoArrange($hwnd, $false)
+            $autoArrangeDisabled = $true
+        }
+        if ($disableRedraw) {
+            [DesktopIcons]::SetRedraw($hwnd, $false)
+            $redrawDisabled = $true
+        }
+
+        for ($pass = 1; $pass -le $passes; $pass++) {
+            $completedPasses = $pass
+            $lookup = New-IconLookup ([DesktopIcons]::List())
+            $passState = Test-DesktopIconPlacement $targets $lookup $tolerance $UseIndexIfAvailable
+            $missing = $passState.missing
+            $duplicateNames = $passState.duplicates
+
+            foreach ($target in $targets) {
+                $resolved = Resolve-PlacementIcon $target $lookup $UseIndexIfAvailable
+                if ($resolved.status -ne "ok") { continue }
+                $current = $resolved.icon
+                if (Test-IconPositionMatch $current $target $tolerance) { continue }
+                [DesktopIcons]::Move($hwnd, [int]$current.index, [int]$target.x, [int]$target.y)
+                $moved.Add([ordered]@{
+                    pass = [int]$pass
+                    name = [string]$target.name
+                    from_x = [int]$current.x
+                    from_y = [int]$current.y
+                    x = [int]$target.x
+                    y = [int]$target.y
+                })
+            }
+
+            if ($settleMs -gt 0) { Start-Sleep -Milliseconds $settleMs }
+            if ($verify) {
+                $verifyLookup = New-IconLookup ([DesktopIcons]::List())
+                $verifyState = Test-DesktopIconPlacement $targets $verifyLookup $tolerance $UseIndexIfAvailable
+                $missing = $verifyState.missing
+                $duplicateNames = $verifyState.duplicates
+                $mismatches = $verifyState.mismatches
+                if ($missing.Count -eq 0 -and $duplicateNames.Count -eq 0 -and $mismatches.Count -eq 0) { break }
+            }
+        }
+
+        if ($verify) {
+            if ($settleMs -gt 0) { Start-Sleep -Milliseconds $settleMs }
+            $finalLookup = New-IconLookup ([DesktopIcons]::List())
+            $finalState = Test-DesktopIconPlacement $targets $finalLookup $tolerance $UseIndexIfAvailable
+            $missing = $finalState.missing
+            $duplicateNames = $finalState.duplicates
+            $mismatches = $finalState.mismatches
+        }
+        $placementSucceeded = ($missing.Count -eq 0) -and ($duplicateNames.Count -eq 0) -and ((-not $verify) -or $mismatches.Count -eq 0)
+    } finally {
+        if ($redrawDisabled) { [DesktopIcons]::SetRedraw($hwnd, $true) }
+        if ($autoArrangeDisabled -and $autoArrangeWasEnabled -and ($restoreAutoArrange -or -not $placementSucceeded)) {
+            [DesktopIcons]::SetAutoArrange($hwnd, $true)
+            $autoArrangeRestored = $true
+        }
+    }
+
+    return [ordered]@{
+        ok = [bool]$placementSucceeded
+        count = [int]$targets.Count
+        passes = [int]$completedPasses
+        moved = $moved
+        missing = $missing
+        duplicates = $duplicateNames
+        mismatches = $mismatches
+        auto_arrange_was_enabled = [bool]$autoArrangeWasEnabled
+        auto_arrange_disabled = [bool]$autoArrangeDisabled
+        auto_arrange_restored = [bool]$autoArrangeRestored
+        redraw_suppressed = [bool]$disableRedraw
+    }
 }
 
 function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
@@ -589,6 +821,10 @@ function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
             client_rect = $clientRect
             window_rect = $windowRect
             displays = [DesktopIcons]::Displays()
+            styles = [ordered]@{
+                auto_arrange = [DesktopIcons]::AutoArrange($hwnd)
+                snap_to_grid = [DesktopIcons]::SnapToGrid($hwnd)
+            }
         }
         grid = $grid
         occupied_cells = $occupied
@@ -663,14 +899,16 @@ function Invoke-Tool([string]$Name, $Arguments) {
             $stepY = [int]$grid.spacing_y
             $columns = [int]$grid.columns
 
-            $moved = New-Object System.Collections.Generic.List[object]
+            $targets = New-Object System.Collections.Generic.List[object]
             for ($i = 0; $i -lt $icons.Count; $i++) {
                 $x = $originX + (($i % $columns) * $stepX)
                 $y = $originY + ([Math]::Floor($i / $columns) * $stepY)
-                [DesktopIcons]::Move($hwnd, [int]$icons[$i].index, [int]$x, [int]$y)
-                $moved.Add([ordered]@{ index = $icons[$i].index; name = $icons[$i].name; x = [int]$x; y = [int]$y })
+                $targets.Add([ordered]@{ index = $icons[$i].index; name = $icons[$i].name; x = [int]$x; y = [int]$y })
             }
-            return @{ ok = $true; count = $moved.Count; grid = $grid; icons = $moved }
+            $placement = Invoke-DesktopIconPlacement $hwnd $targets $Arguments $true
+            $placement["grid"] = $grid
+            $placement["icons"] = $targets
+            return $placement
         }
         "set_desktop_snap_to_grid" {
             $hwnd = [DesktopIcons]::FindDesktopListView()
@@ -681,7 +919,10 @@ function Invoke-Tool([string]$Name, $Arguments) {
         "save_desktop_icon_layout" {
             $path = [string](Get-ArgValue $Arguments "path" "desktop-icons-layout.json")
             $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
-            $payload = [ordered]@{ version = 1; icons = [DesktopIcons]::List() }
+            $hwnd = [DesktopIcons]::FindDesktopListView()
+            $icons = @([DesktopIcons]::List())
+            $gridInfo = New-DesktopIconGrid $hwnd @{} $icons
+            $payload = [ordered]@{ version = 1; icons = $icons; grid = $gridInfo.grid }
             $payload | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $resolved -Encoding UTF8
             return @{ ok = $true; path = $resolved; count = $payload.icons.Count }
         }
@@ -690,23 +931,9 @@ function Invoke-Tool([string]$Name, $Arguments) {
             $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
             $payload = Get-Content -LiteralPath $resolved -Raw -Encoding UTF8 | ConvertFrom-Json
             $hwnd = [DesktopIcons]::FindDesktopListView()
-            $current = @{}
-            foreach ($icon in [DesktopIcons]::List()) {
-                $current[$icon.name.ToLowerInvariant()] = $icon
-            }
-            $moved = New-Object System.Collections.Generic.List[object]
-            $missing = New-Object System.Collections.Generic.List[string]
-            foreach ($icon in $payload.icons) {
-                $key = ([string]$icon.name).ToLowerInvariant()
-                if (-not $current.ContainsKey($key)) {
-                    $missing.Add([string]$icon.name)
-                    continue
-                }
-                $target = $current[$key]
-                [DesktopIcons]::Move($hwnd, [int]$target.index, [int]$icon.x, [int]$icon.y)
-                $moved.Add([ordered]@{ name = $icon.name; x = [int]$icon.x; y = [int]$icon.y })
-            }
-            return @{ ok = $true; moved = $moved; missing = $missing }
+            $placement = Invoke-DesktopIconPlacement $hwnd @($payload.icons) $Arguments $false
+            $placement["path"] = $resolved
+            return $placement
         }
         default {
             throw "Unknown tool: $Name"
@@ -720,10 +947,10 @@ $toolSchemas = @(
     [ordered]@{ name = "diagnose_desktop_icon_host"; description = "Show Progman and WorkerW windows and child classes for desktop icon host troubleshooting."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "list_desktop_displays"; description = "List active Windows display monitors, primary and virtual screen bounds, and work areas."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "move_desktop_icon"; description = "Move one desktop icon by exact ListView index or exact icon name."; inputSchema = @{ type = "object"; properties = @{ index = @{ type = "integer" }; name = @{ type = "string" }; x = @{ type = "integer" }; y = @{ type = "integer" } }; required = @("x", "y"); additionalProperties = $false } },
-    [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into the detected or specified ListView grid."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" } }; additionalProperties = $false } },
+    [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into the detected or specified ListView grid, with optional stabilization passes and verification."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; additionalProperties = $false } },
     [ordered]@{ name = "set_desktop_snap_to_grid"; description = "Enable or disable the desktop ListView snap-to-grid style."; inputSchema = @{ type = "object"; properties = @{ enabled = @{ type = "boolean"; default = $true } }; additionalProperties = $false } },
     [ordered]@{ name = "save_desktop_icon_layout"; description = "Save the current desktop icon layout to a JSON file."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string"; default = "desktop-icons-layout.json" } }; additionalProperties = $false } },
-    [ordered]@{ name = "restore_desktop_icon_layout"; description = "Restore desktop icon positions from a JSON file saved by save_desktop_icon_layout."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string" } }; required = @("path"); additionalProperties = $false } }
+    [ordered]@{ name = "restore_desktop_icon_layout"; description = "Restore desktop icon positions from a JSON file saved by save_desktop_icon_layout, with stabilization passes and post-restore verification."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; required = @("path"); additionalProperties = $false } }
 )
 
 while ($null -ne ($line = [Console]::In.ReadLine())) {

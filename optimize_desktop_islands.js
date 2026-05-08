@@ -108,7 +108,7 @@ const MODE_PRESETS = {
     blocks: [
       { id: "non_games", anchor: "left", direction: "down", width: 2, priority: 10 },
       { id: "bottom_right", anchor: "bottom-right", direction: "left", width: 2, priority: 9 },
-      { id: "rpg_action_rpg", anchor: "top-left", direction: "right", width: 3, priority: 5 },
+      { id: "rpg_action_rpg", anchor: "content-top-left", direction: "right", width: 3, priority: 5 },
       { id: "strategy_sim", anchor: "top-right", direction: "right", width: 5, priority: 5 },
       { id: "shooters_action", anchor: "middle-left", direction: "right", width: 5, priority: 4 },
       { id: "platform_puzzle_explore", anchor: "middle-right", direction: "right", width: 4, priority: 4 },
@@ -119,7 +119,7 @@ const MODE_PRESETS = {
     blocks: [
       { id: "non_games", anchor: "left", direction: "down", width: 2, priority: 10 },
       { id: "bottom_right", anchor: "bottom-right", direction: "left", width: 2, priority: 9 },
-      { id: "rpg_action_rpg", anchor: "top", direction: "right", width: 8, priority: 5 },
+      { id: "rpg_action_rpg", anchor: "content-top", direction: "right", width: 8, priority: 5 },
       { id: "strategy_sim", anchor: "upper-middle", direction: "right", width: 8, priority: 5 },
       { id: "shooters_action", anchor: "middle", direction: "right", width: 8, priority: 4 },
       { id: "platform_puzzle_explore", anchor: "lower-middle", direction: "right", width: 8, priority: 4 },
@@ -130,7 +130,7 @@ const MODE_PRESETS = {
     blocks: [
       { id: "non_games", anchor: "left", direction: "down", width: 2, priority: 10 },
       { id: "bottom_right", anchor: "bottom-right", direction: "left", width: 2, priority: 9 },
-      { id: "rpg_action_rpg", anchor: "top-left", direction: "down", width: 2, priority: 5 },
+      { id: "rpg_action_rpg", anchor: "content-top-left", direction: "down", width: 2, priority: 5 },
       { id: "strategy_sim", anchor: "top-middle", direction: "down", width: 3, priority: 5 },
       { id: "shooters_action", anchor: "top-right", direction: "down", width: 2, priority: 4 },
       { id: "platform_puzzle_explore", anchor: "middle-right", direction: "down", width: 2, priority: 4 },
@@ -158,6 +158,12 @@ function parseArgs(argv) {
     else if (arg === "--output") args.output = argv[++i];
     else if (arg === "--mode") args.mode = argv[++i];
     else if (arg === "--preferences") args.preferences = argv[++i];
+    else if (arg === "--columns") args.columns = Number(argv[++i]);
+    else if (arg === "--rows") args.rows = Number(argv[++i]);
+    else if (arg === "--origin-x") args.originX = Number(argv[++i]);
+    else if (arg === "--origin-y") args.originY = Number(argv[++i]);
+    else if (arg === "--spacing-x") args.spacingX = Number(argv[++i]);
+    else if (arg === "--spacing-y") args.spacingY = Number(argv[++i]);
     else if (arg === "--help") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -168,11 +174,47 @@ function readJson(path) {
   return JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 }
 
-function gridFromIcons(icons) {
+function minPositiveDelta(values, fallback) {
+  const sorted = [...new Set(values)].sort((a, b) => a - b);
+  let best = Infinity;
+  for (let i = 1; i < sorted.length; i++) best = Math.min(best, sorted[i] - sorted[i - 1]);
+  return Number.isFinite(best) && best > 0 ? best : fallback;
+}
+
+function sequence(origin, spacing, count) {
+  return Array.from({ length: count }, (_, index) => origin + index * spacing);
+}
+
+function gridFromIcons(icons, options = {}) {
+  if (options.grid?.xs?.length && options.grid?.ys?.length) {
+    return { xs: [...options.grid.xs], ys: [...options.grid.ys] };
+  }
+  if (
+    Number.isFinite(options.grid?.origin_x) &&
+    Number.isFinite(options.grid?.origin_y) &&
+    Number.isFinite(options.grid?.spacing_x) &&
+    Number.isFinite(options.grid?.spacing_y) &&
+    Number.isFinite(options.grid?.columns) &&
+    Number.isFinite(options.grid?.rows)
+  ) {
+    return {
+      xs: sequence(options.grid.origin_x, options.grid.spacing_x, options.grid.columns),
+      ys: sequence(options.grid.origin_y, options.grid.spacing_y, options.grid.rows),
+    };
+  }
   return {
-    xs: [...new Set(icons.map((icon) => icon.x))].sort((a, b) => a - b),
-    ys: [...new Set(icons.map((icon) => icon.y))].sort((a, b) => a - b),
+    xs: buildAxis(icons.map((icon) => icon.x), options.originX, options.spacingX, options.columns),
+    ys: buildAxis(icons.map((icon) => icon.y), options.originY, options.spacingY, options.rows),
   };
+}
+
+function buildAxis(values, requestedOrigin, requestedSpacing, requestedCount) {
+  const unique = [...new Set(values)].sort((a, b) => a - b);
+  const origin = Number.isFinite(requestedOrigin) ? requestedOrigin : unique[0];
+  const spacing = Number.isFinite(requestedSpacing) ? requestedSpacing : minPositiveDelta(unique, 152);
+  const inferredCount = unique.length ? Math.floor((unique[unique.length - 1] - origin) / spacing) + 1 : 0;
+  const count = Math.max(1, requestedCount || inferredCount || unique.length);
+  return sequence(origin, spacing, count);
 }
 
 function mergePreferences(mode, preferences) {
@@ -201,8 +243,10 @@ function classifyIcons(icons, catalog) {
 function anchorCell(anchor, cols, rows) {
   const points = {
     left: [0, 0],
-    "top-left": [2, 0],
-    top: [2, 0],
+    "top-left": [0, 0],
+    "content-top-left": [2, 0],
+    top: [0, 0],
+    "content-top": [2, 0],
     "top-middle": [Math.floor(cols / 2) - 1, 0],
     "top-right": [Math.max(2, cols - 5), 0],
     "upper-middle": [2, Math.max(0, Math.floor(rows * 0.2))],
@@ -265,8 +309,12 @@ function nearestFreeCell(preferred, used, cols, rows) {
   return best;
 }
 
+function iconKey(icon) {
+  return `${icon.index}\u001f${icon.name}`;
+}
+
 function planLayout(icons, options) {
-  const { xs, ys } = gridFromIcons(icons);
+  const { xs, ys } = gridFromIcons(icons, options);
   const groups = classifyIcons(icons, options.catalog || DEFAULT_CATALOG);
   const used = new Set();
   const planned = new Map();
@@ -281,15 +329,15 @@ function planLayout(icons, options) {
         ? nearestFreeCell(preferred, used, xs.length, ys.length)
         : preferred;
       used.add(`${col},${row}`);
-      planned.set(items[i].name, { ...items[i], x: xs[col], y: ys[row], col, row, category: block.id });
+      planned.set(iconKey(items[i]), { ...items[i], x: xs[col], y: ys[row], col, row, category: block.id });
     }
   }
 
-  const remaining = icons.filter((icon) => !planned.has(icon.name)).sort((a, b) => a.index - b.index);
+  const remaining = icons.filter((icon) => !planned.has(iconKey(icon))).sort((a, b) => a.index - b.index);
   for (const icon of remaining) {
     const [col, row] = nearestFreeCell(anchorCell("bottom", xs.length, ys.length), used, xs.length, ys.length);
     used.add(`${col},${row}`);
-    planned.set(icon.name, { ...icon, x: xs[col], y: ys[row], col, row, category: "uncategorized" });
+    planned.set(iconKey(icon), { ...icon, x: xs[col], y: ys[row], col, row, category: "uncategorized" });
   }
 
   const outputIcons = [...planned.values()].sort((a, b) => a.index - b.index);
@@ -301,12 +349,12 @@ function planLayout(icons, options) {
 function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
-    console.log("Usage: node optimize_desktop_islands.js --input layout.json --output planned.json --mode islands|lines|columns|corners [--preferences prefs.json]");
+    console.log("Usage: node optimize_desktop_islands.js --input layout.json --output planned.json --mode islands|lines|columns|corners [--preferences prefs.json] [--columns N --rows N --origin-x X --origin-y Y --spacing-x X --spacing-y Y]");
     return;
   }
   const data = readJson(args.input);
   const prefs = mergePreferences(args.mode, args.preferences);
-  const planned = planLayout(data.icons, { ...prefs, mode: args.mode });
+  const planned = planLayout(data.icons, { ...prefs, mode: args.mode, grid: data.grid, columns: args.columns, rows: args.rows, originX: args.originX, originY: args.originY, spacingX: args.spacingX, spacingY: args.spacingY });
   fs.writeFileSync(args.output, JSON.stringify(planned, null, 2), "utf8");
   console.log(`wrote ${args.output}`);
   console.log(`mode: ${args.mode}`);
