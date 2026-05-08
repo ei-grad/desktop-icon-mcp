@@ -1,9 +1,17 @@
 [mcp_servers.desktop-icons]
-command = "powershell.exe"
+command = "node"
 args = [
-  "-NoProfile",
-  "-ExecutionPolicy",
-  "Bypass",
-  "-File",
-  ".\\desktop_icon_mcp.ps1"
+  ".\\bin\\desktop-icon-mcp.js"
 ]
+
+[mcp_servers.desktop-icons.tools.list_desktop_icons]
+approval_mode = "approve"
+
+[mcp_servers.desktop-icons.tools.describe_desktop_icon_grid]
+approval_mode = "approve"
+
+[mcp_servers.desktop-icons.tools.save_desktop_icon_layout]
+approval_mode = "approve"
+
+[mcp_servers.desktop-icons.tools.list_desktop_displays]
+approval_mode = "approve"

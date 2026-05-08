@@ -1,24 +1,33 @@
 # Desktop Icon MCP
 
-Local MCP server for arranging Windows desktop icons from Codex.
+JS-first MCP server for reading, planning, and arranging Windows desktop icons
+from Codex. Node.js owns MCP JSON-RPC, tool schemas, validation, the
+deterministic optimizer, tests, and packaging. PowerShell is kept as a thin
+Windows helper for Explorer/ListView Win32 operations.
 
-It exposes tools that read the desktop `SysListView32` owned by Explorer and
-send standard ListView messages to move icons. Core desktop tools require only
-PowerShell. Deterministic layout planning uses `optimize_desktop_islands.js` and
-requires Node.js 18+ on `PATH`.
+## Requirements
 
-## Tools
+- Windows desktop session with Explorer running.
+- Node.js 18+ on `PATH`.
+- PowerShell available as `powershell.exe`.
+
+## MCP Tools
 
 - `list_desktop_icons` - list icon names, indexes, and current `x`/`y` positions.
-- `describe_desktop_icon_grid` - report the detected ListView grid, including rects, origin, spacing, rows, columns, occupied cells, and optional full cell map.
-- `diagnose_desktop_icon_host` - inspect Progman/WorkerW host windows if icon discovery fails.
-- `list_desktop_displays` - list active monitors, primary screen bounds, virtual screen bounds, and monitor work areas.
+- `describe_desktop_icon_grid` - report ListView rects, display metadata, grid, occupied cells, and optional full cell map.
+- `diagnose_desktop_icon_host` - inspect Progman/WorkerW host windows.
+- `list_desktop_displays` - list active display monitors, active primary/virtual bounds, and raw system-metric diagnostics.
 - `move_desktop_icon` - move one icon by `index` or exact `name`.
-- `arrange_desktop_icons_grid` - arrange all icons in a grid, with stabilization passes and verification.
-- `plan_desktop_icon_layout` - run the deterministic optimizer from MCP, optionally applying the planned layout.
+- `arrange_desktop_icons_grid` - arrange all icons in a grid with stabilization and verification.
+- `plan_desktop_icon_layout` - run the deterministic JS optimizer, optionally applying the planned layout.
+- `plan_and_apply_desktop_icon_layout` - high-level alias that plans and applies in one call.
 - `set_desktop_snap_to_grid` - toggle ListView snap-to-grid.
 - `save_desktop_icon_layout` - save the current layout to JSON.
-- `restore_desktop_icon_layout` - restore a saved layout by icon name, with stabilization passes and verification.
+- `restore_desktop_icon_layout` - restore a saved layout by icon name.
+
+Mutating tools return placement diagnostics including `ok`, `mismatches`,
+`missing`, `duplicates`, `auto_arrange_was_enabled`, and
+`auto_arrange_restored`.
 
 ## Installation
 
@@ -28,53 +37,71 @@ Clone the repository somewhere stable:
 git clone https://github.com/YOUR-USER/desktop-icon-mcp.git
 ```
 
-Add the server to your Codex MCP config using an absolute path:
+Add the JS server to Codex MCP config using an absolute path:
 
 ```toml
 [mcp_servers.desktop-icons]
-command = "powershell.exe"
-args = [
-  "-NoProfile",
-  "-ExecutionPolicy",
-  "Bypass",
-  "-File",
-  "C:\\path\\to\\desktop-icon-mcp\\desktop_icon_mcp.ps1"
-]
+command = "node"
+args = ["C:\\path\\to\\desktop-icon-mcp\\bin\\desktop-icon-mcp.js"]
 ```
 
-Restart Codex after adding or changing the MCP server so it loads the current tool schemas.
-
-## Local Codex config
-
-This project includes a local Codex config at `.codex/config.toml`:
+After npm publication, the intended install shape is:
 
 ```toml
 [mcp_servers.desktop-icons]
-command = "powershell.exe"
-args = [
-  "-NoProfile",
-  "-ExecutionPolicy",
-  "Bypass",
-  "-File",
-  ".\\desktop_icon_mcp.ps1"
-]
+command = "npx"
+args = ["-y", "desktop-icon-mcp"]
 ```
 
-Then you can ask Codex things like:
+Restart Codex after changing MCP server code or config so it loads the current
+tool schemas and process.
+
+## Local Codex Config
+
+This project includes `.codex/config.toml` for local development:
+
+```toml
+[mcp_servers.desktop-icons]
+command = "node"
+args = [".\\bin\\desktop-icon-mcp.js"]
+```
+
+## Architecture
+
+- `bin/desktop-icon-mcp.js` starts the MCP server.
+- `src/server.js` handles JSON-RPC.
+- `src/tools.js` owns public MCP tool schemas and handlers.
+- `src/planner.js` contains the deterministic layout optimizer.
+- `src/powershell-helper.js` invokes the helper with UTF-8 JSON over stdin/stdout.
+- `scripts/desktop_icon_helper.ps1` performs Windows Explorer/ListView reads and writes.
+
+The helper command contract is intentionally small:
 
 ```text
-Покажи список иконок рабочего стола.
-Расставь иконки рабочего стола сеткой с отступом 20 и сортировкой по имени.
-Передвинь иконку "Корзина" в координаты x=16 y=16.
-Сохрани текущую раскладку иконок в C:\Users\Андрей\Desktop\layout.json.
-Восстанови раскладку из C:\Users\Андрей\Desktop\layout.json.
+list_icons
+describe_grid
+diagnose_host
+list_displays
+move_icon
+set_snap_to_grid
+get_layout_snapshot
+apply_layout
+get_styles
+set_auto_arrange
 ```
 
-## Deterministic optimizer
+## Deterministic Optimizer
 
-`optimize_desktop_islands.js` converts abstract layout preferences into a deterministic layout JSON. It does not move icons by itself; use `restore_desktop_icon_layout` after reviewing the output. Layouts saved by `save_desktop_icon_layout` include grid metadata that the optimizer reuses.
+The optimizer converts abstract placement preferences into concrete grid cells.
+It supports modes:
 
-The easiest route from MCP is `plan_desktop_icon_layout`:
+- `custom`
+- `islands`
+- `lines`
+- `columns`
+- `corners`
+
+From MCP, use `plan_desktop_icon_layout`:
 
 ```json
 {
@@ -85,31 +112,19 @@ The easiest route from MCP is `plan_desktop_icon_layout`:
 }
 ```
 
-Pass `"apply": true` to plan and apply in one stabilized operation. Without
-`input_path`, the tool captures the current desktop first. With `input_path`, it
-plans from a saved layout JSON.
+Use `plan_and_apply_desktop_icon_layout` when the planned result should be
+applied immediately. Without `input_path`, the tool captures the current
+desktop first. With `input_path`, it plans from a saved layout JSON.
+
+CLI usage:
 
 ```powershell
 node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-islands.json --mode islands
-node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-lines.json --mode lines
-node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-columns.json --mode columns
-node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-corners.json --mode corners
+node bin\desktop-icon-plan.js --input desktop-icons-layout.json --output desktop-icons-optimized-corners.json --mode corners
 ```
 
-Modes:
-
-- `islands` - compact category blocks.
-- `lines` - category rows.
-- `columns` - category columns.
-- `corners` - important blocks anchored to screen corners.
-
-Preferences can be overridden with a JSON file:
-
-```powershell
-node optimize_desktop_islands.js --mode islands --preferences preferences.json
-```
-
-The preference file can override block anchors, directions, widths, priorities, or explicit `cells`:
+Preferences can override block anchors, directions, widths, priorities, or
+explicit cells:
 
 ```json
 {
@@ -120,42 +135,53 @@ The preference file can override block anchors, directions, widths, priorities, 
 }
 ```
 
-For sparse saved layouts, pass grid bounds explicitly so corner-based modes use the intended desktop extent rather than only the currently occupied icon coordinates:
+For sparse saved layouts, pass grid bounds explicitly so corner modes use the
+intended desktop extent rather than only occupied icon coordinates:
 
 ```powershell
-node optimize_desktop_islands.js --mode corners --columns 12 --rows 9 --origin-x 28 --origin-y 2 --spacing-x 152 --spacing-y 222
+node bin\desktop-icon-plan.js --mode corners --columns 12 --rows 9 --origin-x 28 --origin-y 2 --spacing-x 152 --spacing-y 222
 ```
 
-## Packaging direction
+## Display Handling
 
-The current MCP server is PowerShell-first because Win32 desktop icon control is
-implemented through embedded C# P/Invoke. For GitHub/npm distribution, the
-cleaner long-term shape is JS-first:
+The helper sets process DPI awareness before any Win32 desktop/display calls.
+Without this, Windows can virtualize a 3840x2160 desktop as 1920x1080 for a
+DPI-unaware PowerShell process, while Explorer icon coordinates still use the
+larger coordinate space.
 
-- a JS MCP server owns JSON-RPC, tool schemas, deterministic planning, validation, tests, and install ergonomics;
-- a small PowerShell helper owns only Windows Explorer/ListView reads and writes;
-- installation can become `npx @scope/desktop-icon-mcp`, with the package
-  shipping the PowerShell helper alongside the JS entrypoint.
+Display metadata is derived from `EnumDisplayMonitors`, which reports active
+visible monitors. `primary_screen` and `virtual_screen` are computed from those
+active monitor rectangles, so a disconnected first display should not determine
+the usable desktop size. Raw `GetSystemMetrics` values are still returned as
+`system_primary_screen`, `system_virtual_screen`, and `system_monitor_count` for
+diagnostics.
 
-Until that migration lands, `desktop_icon_mcp.ps1` is the MCP entrypoint and
-`plan_desktop_icon_layout` bridges to the JS optimizer.
+Grid sizing prefers the desktop ListView client rect. If that is unavailable,
+fallbacks use the active primary monitor derived from `EnumDisplayMonitors`.
 
 ## Tests
 
 ```powershell
+npm test
 node test_optimizer.js
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\smoke_test.ps1
+node test_tools.js
+node smoke_test_js.js
+```
+
+Helper smoke tests that need the real Explorer desktop should be run outside the
+sandbox in the active Windows user session. Non-mutating live checks:
+
+```powershell
+'{"command":"list_displays","args":{}}' | powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop_icon_helper.ps1
+'{"command":"diagnose_host","args":{}}' | powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\desktop_icon_helper.ps1
 ```
 
 ## Notes
 
-- Run Codex in the same Windows user session where Explorer owns the desktop.
-- If Windows has "Auto arrange icons" enabled, Explorer can immediately move
-  icons again. `restore_desktop_icon_layout` and `arrange_desktop_icons_grid`
-  temporarily disable it by default before exact placement.
+- If Windows has "Auto arrange icons" enabled, Explorer can move icons back.
+  Apply/restore tools disable it by default during exact placement and leave it
+  disabled after successful exact placement unless `restore_auto_arrange` is true.
 - Coordinates are ListView coordinates, not DPI-independent CSS pixels.
-- `describe_desktop_icon_grid` reports both viewport rows/columns and icon extents. On multi-monitor or recently disconnected-monitor setups, Explorer can keep icon coordinates outside the current primary screen bounds, so icon extents are often more useful than `SM_CXSCREEN`/`SM_CYSCREEN` alone.
-- `restore_desktop_icon_layout` and `arrange_desktop_icons_grid` default to suppressing redraw, temporarily disabling ListView Auto Arrange, running up to 3 placement passes, then verifying the final positions. If `auto_arrange_was_enabled` is true, exact placement would normally be unstable; by default the tool leaves Auto Arrange disabled after a successful exact placement. Pass `restore_auto_arrange: true` only if you want Explorer to resume automatic placement afterward.
-- Restoring a layout matches icons by exact visible name. If there are duplicate
-  names, use `move_desktop_icon` with an index for exact one-off moves.
-- MCP server changes require a commit and a Codex restart before the running session sees updated tool code or schemas.
+- Restoring a layout matches icons by exact visible name. Duplicate names should
+  be moved with explicit indexes.
+- Generated layout JSON files are local machine state and should stay untracked.

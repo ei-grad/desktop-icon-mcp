@@ -42,6 +42,7 @@ public static class DesktopIcons {
     const int SM_CYVIRTUALSCREEN = 79;
     const int SM_CMONITORS = 80;
     const int MONITORINFOF_PRIMARY = 0x00000001;
+    static bool dpiAwarenessAttempted = false;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT {
@@ -111,6 +112,7 @@ public static class DesktopIcons {
     public class DisplayInfo {
         public string handle { get; set; }
         public string deviceName { get; set; }
+        public bool active { get; set; }
         public bool primary { get; set; }
         public RectInfo monitor_rect { get; set; }
         public RectInfo work_rect { get; set; }
@@ -118,8 +120,12 @@ public static class DesktopIcons {
 
     public class DisplaySnapshot {
         public int monitor_count { get; set; }
+        public int active_monitor_count { get; set; }
+        public int system_monitor_count { get; set; }
         public RectInfo primary_screen { get; set; }
         public RectInfo virtual_screen { get; set; }
+        public RectInfo system_primary_screen { get; set; }
+        public RectInfo system_virtual_screen { get; set; }
         public List<DisplayInfo> monitors { get; set; }
     }
 
@@ -129,6 +135,12 @@ public static class DesktopIcons {
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool SetProcessDPIAware();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string lpszWindow);
@@ -219,6 +231,36 @@ public static class DesktopIcons {
         };
     }
 
+    static RectInfo UnionMonitorRects(List<DisplayInfo> monitors) {
+        if (monitors.Count == 0) return null;
+        int left = monitors[0].monitor_rect.left;
+        int top = monitors[0].monitor_rect.top;
+        int right = monitors[0].monitor_rect.right;
+        int bottom = monitors[0].monitor_rect.bottom;
+        foreach (DisplayInfo monitor in monitors) {
+            if (monitor.monitor_rect.left < left) left = monitor.monitor_rect.left;
+            if (monitor.monitor_rect.top < top) top = monitor.monitor_rect.top;
+            if (monitor.monitor_rect.right > right) right = monitor.monitor_rect.right;
+            if (monitor.monitor_rect.bottom > bottom) bottom = monitor.monitor_rect.bottom;
+        }
+        return new RectInfo {
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            width = right - left,
+            height = bottom - top
+        };
+    }
+
+    static RectInfo PrimaryMonitorRect(List<DisplayInfo> monitors, RectInfo fallback) {
+        foreach (DisplayInfo monitor in monitors) {
+            if (monitor.primary) return monitor.monitor_rect;
+        }
+        if (monitors.Count > 0) return monitors[0].monitor_rect;
+        return fallback;
+    }
+
     static string ClassName(IntPtr hwnd) {
         var sb = new StringBuilder(256);
         GetClassName(hwnd, sb, sb.Capacity);
@@ -229,7 +271,22 @@ public static class DesktopIcons {
         return FindWindowEx(parent, IntPtr.Zero, cls, null);
     }
 
+    public static void EnsureDpiAwareness() {
+        if (dpiAwarenessAttempted) return;
+        dpiAwarenessAttempted = true;
+        try {
+            if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return;
+        } catch (EntryPointNotFoundException) {
+        } catch {
+        }
+        try {
+            SetProcessDPIAware();
+        } catch {
+        }
+    }
+
     public static IntPtr FindDesktopListView() {
+        EnsureDpiAwareness();
         IntPtr progman = FindWindow("Progman", null);
         if (progman != IntPtr.Zero) {
             IntPtr timeoutResult;
@@ -283,6 +340,7 @@ public static class DesktopIcons {
     }
 
     public static DisplaySnapshot Displays() {
+        EnsureDpiAwareness();
         var monitors = new List<DisplayInfo>();
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr hdc, ref RECT rect, IntPtr data) => {
             var info = new MONITORINFOEX();
@@ -292,6 +350,7 @@ public static class DesktopIcons {
                 monitors.Add(new DisplayInfo {
                     handle = "0x" + monitor.ToInt64().ToString("X"),
                     deviceName = (info.szDevice ?? "").TrimEnd('\0'),
+                    active = true,
                     primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
                     monitor_rect = ToRectInfo(info.rcMonitor),
                     work_rect = ToRectInfo(info.rcWork)
@@ -306,10 +365,18 @@ public static class DesktopIcons {
         int virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int virtualWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         int virtualHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        RectInfo systemPrimary = RectFromMetrics(0, 0, primaryWidth, primaryHeight);
+        RectInfo systemVirtual = RectFromMetrics(virtualX, virtualY, virtualWidth, virtualHeight);
+        RectInfo activeVirtual = UnionMonitorRects(monitors);
+        if (activeVirtual == null) activeVirtual = systemVirtual;
         return new DisplaySnapshot {
-            monitor_count = GetSystemMetrics(SM_CMONITORS),
-            primary_screen = RectFromMetrics(0, 0, primaryWidth, primaryHeight),
-            virtual_screen = RectFromMetrics(virtualX, virtualY, virtualWidth, virtualHeight),
+            monitor_count = monitors.Count,
+            active_monitor_count = monitors.Count,
+            system_monitor_count = GetSystemMetrics(SM_CMONITORS),
+            primary_screen = PrimaryMonitorRect(monitors, systemPrimary),
+            virtual_screen = activeVirtual,
+            system_primary_screen = systemPrimary,
+            system_virtual_screen = systemVirtual,
             monitors = monitors
         };
     }
@@ -432,31 +499,35 @@ public static class DesktopIcons {
     }
 
     public static RectInfo WindowRect(IntPtr hwnd) {
+        EnsureDpiAwareness();
         RECT rect;
         if (GetWindowRect(hwnd, out rect)) return ToRectInfo(rect);
-        int width = GetSystemMetrics(SM_CXSCREEN);
-        int height = GetSystemMetrics(SM_CYSCREEN);
+        RectInfo screen = Displays().primary_screen;
+        int width = screen.width;
+        int height = screen.height;
         return new RectInfo { left = 0, top = 0, right = width, bottom = height, width = width, height = height };
     }
 
     public static RectInfo ClientRect(IntPtr hwnd) {
+        EnsureDpiAwareness();
         RECT rect;
         if (GetClientRect(hwnd, out rect)) return ToRectInfo(rect);
-        int width = GetSystemMetrics(SM_CXSCREEN);
-        int height = GetSystemMetrics(SM_CYSCREEN);
+        RectInfo screen = Displays().primary_screen;
+        int width = screen.width;
+        int height = screen.height;
         return new RectInfo { left = 0, top = 0, right = width, bottom = height, width = width, height = height };
     }
 
     public static int DesktopWidth(IntPtr hwnd) {
         RectInfo rect = ClientRect(hwnd);
         if (rect.width > 0) return rect.width;
-        return GetSystemMetrics(SM_CXSCREEN);
+        return Displays().primary_screen.width;
     }
 
     public static int DesktopHeight(IntPtr hwnd) {
         RectInfo rect = ClientRect(hwnd);
         if (rect.height > 0) return rect.height;
-        return GetSystemMetrics(SM_CYSCREEN);
+        return Displays().primary_screen.height;
     }
 
     public static void SetSnapToGrid(IntPtr hwnd, bool enabled) {
@@ -1054,6 +1125,7 @@ $toolSchemas = @(
     [ordered]@{ name = "restore_desktop_icon_layout"; description = "Restore desktop icon positions from a JSON file saved by save_desktop_icon_layout, with stabilization passes and post-restore verification."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; required = @("path"); additionalProperties = $false } }
 )
 
+if (-not $script:DesktopIconMcpNoLoop) {
 while ($null -ne ($line = [Console]::In.ReadLine())) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     $id = $null
@@ -1092,4 +1164,5 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 30 -Compress))
         [Console]::Out.Flush()
     }
+}
 }

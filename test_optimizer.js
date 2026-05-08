@@ -1,5 +1,5 @@
 const assert = require("assert");
-const { planLayout, mergePreferences } = require("./optimize_desktop_islands.js");
+const { planLayout, mergePreferences } = require("./src/planner.js");
 
 function icon(index, name, x, y) {
   return { index, name, x, y };
@@ -53,6 +53,23 @@ run("uses saved MCP grid metadata for sparse layouts", () => {
   assert.strictEqual(layout.grid.columns, 12);
   assert.strictEqual(layout.grid.rows, 9);
   assert.deepStrictEqual(layout.icons.map((item) => [item.col, item.row]), [[11, 8], [10, 8]]);
+});
+
+run("explicit grid overrides take precedence over saved metadata", () => {
+  const layout = planLayout([icon(0, "A", 0, 0)], {
+    mode: "custom",
+    grid: { origin_x: 0, origin_y: 0, spacing_x: 10, spacing_y: 10, columns: 2, rows: 2 },
+    columns: 4,
+    rows: 3,
+    originX: 5,
+    originY: 7,
+    spacingX: 11,
+    spacingY: 13,
+    blocks: [{ id: "uncategorized", anchor: "bottom-right", direction: "left", width: 1, priority: 1 }],
+  });
+  assert.strictEqual(layout.grid.columns, 4);
+  assert.strictEqual(layout.grid.rows, 3);
+  assert.deepStrictEqual([layout.icons[0].x, layout.icons[0].y, layout.icons[0].col, layout.icons[0].row], [38, 33, 3, 2]);
 });
 
 run("top-left anchor is literal in custom preferences", () => {
