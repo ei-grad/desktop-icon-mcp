@@ -3,7 +3,9 @@
 Local MCP server for arranging Windows desktop icons from Codex.
 
 It exposes tools that read the desktop `SysListView32` owned by Explorer and
-send standard ListView messages to move icons. No packages are required.
+send standard ListView messages to move icons. Core desktop tools require only
+PowerShell. Deterministic layout planning uses `optimize_desktop_islands.js` and
+requires Node.js 18+ on `PATH`.
 
 ## Tools
 
@@ -13,11 +15,36 @@ send standard ListView messages to move icons. No packages are required.
 - `list_desktop_displays` - list active monitors, primary screen bounds, virtual screen bounds, and monitor work areas.
 - `move_desktop_icon` - move one icon by `index` or exact `name`.
 - `arrange_desktop_icons_grid` - arrange all icons in a grid, with stabilization passes and verification.
+- `plan_desktop_icon_layout` - run the deterministic optimizer from MCP, optionally applying the planned layout.
 - `set_desktop_snap_to_grid` - toggle ListView snap-to-grid.
 - `save_desktop_icon_layout` - save the current layout to JSON.
 - `restore_desktop_icon_layout` - restore a saved layout by icon name, with stabilization passes and verification.
 
-## Codex config
+## Installation
+
+Clone the repository somewhere stable:
+
+```powershell
+git clone https://github.com/YOUR-USER/desktop-icon-mcp.git
+```
+
+Add the server to your Codex MCP config using an absolute path:
+
+```toml
+[mcp_servers.desktop-icons]
+command = "powershell.exe"
+args = [
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "C:\\path\\to\\desktop-icon-mcp\\desktop_icon_mcp.ps1"
+]
+```
+
+Restart Codex after adding or changing the MCP server so it loads the current tool schemas.
+
+## Local Codex config
 
 This project includes a local Codex config at `.codex/config.toml`:
 
@@ -33,7 +60,7 @@ args = [
 ]
 ```
 
-Restart Codex after opening this project so it loads the MCP server. Then you can ask Codex things like:
+Then you can ask Codex things like:
 
 ```text
 Покажи список иконок рабочего стола.
@@ -46,6 +73,21 @@ Restart Codex after opening this project so it loads the MCP server. Then you ca
 ## Deterministic optimizer
 
 `optimize_desktop_islands.js` converts abstract layout preferences into a deterministic layout JSON. It does not move icons by itself; use `restore_desktop_icon_layout` after reviewing the output. Layouts saved by `save_desktop_icon_layout` include grid metadata that the optimizer reuses.
+
+The easiest route from MCP is `plan_desktop_icon_layout`:
+
+```json
+{
+  "mode": "corners",
+  "output_path": "desktop-icons-optimized-corners.json",
+  "columns": 12,
+  "rows": 9
+}
+```
+
+Pass `"apply": true` to plan and apply in one stabilized operation. Without
+`input_path`, the tool captures the current desktop first. With `input_path`, it
+plans from a saved layout JSON.
 
 ```powershell
 node optimize_desktop_islands.js --input desktop-icons-layout.json --output desktop-icons-optimized-islands.json --mode islands
@@ -82,6 +124,27 @@ For sparse saved layouts, pass grid bounds explicitly so corner-based modes use 
 
 ```powershell
 node optimize_desktop_islands.js --mode corners --columns 12 --rows 9 --origin-x 28 --origin-y 2 --spacing-x 152 --spacing-y 222
+```
+
+## Packaging direction
+
+The current MCP server is PowerShell-first because Win32 desktop icon control is
+implemented through embedded C# P/Invoke. For GitHub/npm distribution, the
+cleaner long-term shape is JS-first:
+
+- a JS MCP server owns JSON-RPC, tool schemas, deterministic planning, validation, tests, and install ergonomics;
+- a small PowerShell helper owns only Windows Explorer/ListView reads and writes;
+- installation can become `npx @scope/desktop-icon-mcp`, with the package
+  shipping the PowerShell helper alongside the JS entrypoint.
+
+Until that migration lands, `desktop_icon_mcp.ps1` is the MCP entrypoint and
+`plan_desktop_icon_layout` bridges to the JS optimizer.
+
+## Tests
+
+```powershell
+node test_optimizer.js
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\smoke_test.ps1
 ```
 
 ## Notes

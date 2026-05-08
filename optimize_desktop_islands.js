@@ -104,6 +104,9 @@ const DEFAULT_CATALOG = {
 };
 
 const MODE_PRESETS = {
+  custom: {
+    blocks: [],
+  },
   islands: {
     blocks: [
       { id: "non_games", anchor: "left", direction: "down", width: 2, priority: 10 },
@@ -174,6 +177,19 @@ function readJson(path) {
   return JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 }
 
+function numberOrUndefined(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function assertPositiveInteger(value, name) {
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+}
+
+function assertPositiveNumber(value, name) {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number`);
+}
+
 function minPositiveDelta(values, fallback) {
   const sorted = [...new Set(values)].sort((a, b) => a - b);
   let best = Infinity;
@@ -189,17 +205,27 @@ function gridFromIcons(icons, options = {}) {
   if (options.grid?.xs?.length && options.grid?.ys?.length) {
     return { xs: [...options.grid.xs], ys: [...options.grid.ys] };
   }
+  const gridOriginX = numberOrUndefined(options.grid?.origin_x);
+  const gridOriginY = numberOrUndefined(options.grid?.origin_y);
+  const gridSpacingX = numberOrUndefined(options.grid?.spacing_x);
+  const gridSpacingY = numberOrUndefined(options.grid?.spacing_y);
+  const gridColumns = numberOrUndefined(options.grid?.columns);
+  const gridRows = numberOrUndefined(options.grid?.rows);
   if (
-    Number.isFinite(options.grid?.origin_x) &&
-    Number.isFinite(options.grid?.origin_y) &&
-    Number.isFinite(options.grid?.spacing_x) &&
-    Number.isFinite(options.grid?.spacing_y) &&
-    Number.isFinite(options.grid?.columns) &&
-    Number.isFinite(options.grid?.rows)
+    gridOriginX !== undefined &&
+    gridOriginY !== undefined &&
+    gridSpacingX !== undefined &&
+    gridSpacingY !== undefined &&
+    gridColumns !== undefined &&
+    gridRows !== undefined
   ) {
+    assertPositiveNumber(gridSpacingX, "grid.spacing_x");
+    assertPositiveNumber(gridSpacingY, "grid.spacing_y");
+    assertPositiveInteger(gridColumns, "grid.columns");
+    assertPositiveInteger(gridRows, "grid.rows");
     return {
-      xs: sequence(options.grid.origin_x, options.grid.spacing_x, options.grid.columns),
-      ys: sequence(options.grid.origin_y, options.grid.spacing_y, options.grid.rows),
+      xs: sequence(gridOriginX, gridSpacingX, gridColumns),
+      ys: sequence(gridOriginY, gridSpacingY, gridRows),
     };
   }
   return {
@@ -210,7 +236,9 @@ function gridFromIcons(icons, options = {}) {
 
 function buildAxis(values, requestedOrigin, requestedSpacing, requestedCount) {
   const unique = [...new Set(values)].sort((a, b) => a - b);
-  const origin = Number.isFinite(requestedOrigin) ? requestedOrigin : unique[0];
+  if (requestedCount !== undefined) assertPositiveInteger(requestedCount, "axis count");
+  if (requestedSpacing !== undefined) assertPositiveNumber(requestedSpacing, "axis spacing");
+  const origin = Number.isFinite(requestedOrigin) ? requestedOrigin : (unique[0] ?? 0);
   const spacing = Number.isFinite(requestedSpacing) ? requestedSpacing : minPositiveDelta(unique, 152);
   const inferredCount = unique.length ? Math.floor((unique[unique.length - 1] - origin) / spacing) + 1 : 0;
   const count = Math.max(1, requestedCount || inferredCount || unique.length);
@@ -218,6 +246,7 @@ function buildAxis(values, requestedOrigin, requestedSpacing, requestedCount) {
 }
 
 function mergePreferences(mode, preferences) {
+  if (!MODE_PRESETS[mode]) throw new Error(`Unknown layout mode: ${mode}`);
   const base = JSON.parse(JSON.stringify(MODE_PRESETS[mode] || MODE_PRESETS.islands));
   if (!preferences) return base;
   const override = typeof preferences === "string" ? readJson(preferences) : preferences;
@@ -263,7 +292,15 @@ function anchorCell(anchor, cols, rows) {
 }
 
 function candidateCells(block, count, cols, rows) {
-  if (block.cells) return block.cells;
+  if (block.cells) {
+    return block.cells.map((cell, index) => {
+      if (!Array.isArray(cell) || cell.length !== 2) throw new Error(`Block ${block.id} cell ${index} must be [col,row]`);
+      const [col, row] = cell;
+      if (!Number.isInteger(col) || !Number.isInteger(row)) throw new Error(`Block ${block.id} cell ${index} must use integer coordinates`);
+      if (col < 0 || col >= cols || row < 0 || row >= rows) throw new Error(`Block ${block.id} cell ${index} is outside the ${cols}x${rows} grid`);
+      return [col, row];
+    });
+  }
   const [startCol, startRow] = anchorCell(block.anchor, cols, rows);
   const width = Math.max(1, block.width || Math.ceil(Math.sqrt(count)));
   const cells = [];
@@ -315,6 +352,7 @@ function iconKey(icon) {
 
 function planLayout(icons, options) {
   const { xs, ys } = gridFromIcons(icons, options);
+  if (icons.length > xs.length * ys.length) throw new Error(`Not enough grid cells for ${icons.length} icons in ${xs.length}x${ys.length} grid`);
   const groups = classifyIcons(icons, options.catalog || DEFAULT_CATALOG);
   const used = new Set();
   const planned = new Map();

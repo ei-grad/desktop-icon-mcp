@@ -1,0 +1,119 @@
+const assert = require("assert");
+const { planLayout, mergePreferences } = require("./optimize_desktop_islands.js");
+
+function icon(index, name, x, y) {
+  return { index, name, x, y };
+}
+
+function assertNoCollisions(layout) {
+  const cells = new Set();
+  for (const item of layout.icons) {
+    const key = `${item.col},${item.row}`;
+    assert(!cells.has(key), `cell collision at ${key}`);
+    cells.add(key);
+    assert(Number.isFinite(item.x), `${item.name} has invalid x`);
+    assert(Number.isFinite(item.y), `${item.name} has invalid y`);
+  }
+}
+
+function uncategorizedBlock(extra = {}) {
+  return { id: "uncategorized", anchor: "top-left", direction: "right", width: 2, priority: 1, ...extra };
+}
+
+function run(name, fn) {
+  try {
+    fn();
+    console.log(`ok ${name}`);
+  } catch (error) {
+    console.error(`not ok ${name}`);
+    throw error;
+  }
+}
+
+run("preserves duplicate names by index", () => {
+  const icons = [
+    icon(0, "A", 0, 0),
+    icon(1, "A", 10, 0),
+    icon(2, "B", 0, 10),
+    icon(3, "C", 10, 10),
+  ];
+  const layout = planLayout(icons, { mode: "custom", blocks: [uncategorizedBlock()] });
+  assert.strictEqual(layout.icons.length, 4);
+  assert.deepStrictEqual(layout.icons.map((item) => `${item.name}:${item.index}`), ["A:0", "A:1", "B:2", "C:3"]);
+  assertNoCollisions(layout);
+});
+
+run("uses saved MCP grid metadata for sparse layouts", () => {
+  const icons = [icon(0, "A", 28, 2), icon(1, "B", 28, 224)];
+  const layout = planLayout(icons, {
+    mode: "custom",
+    grid: { origin_x: 28, origin_y: 2, spacing_x: 152, spacing_y: 222, columns: 12, rows: 9 },
+    blocks: [{ id: "uncategorized", anchor: "bottom-right", direction: "left", width: 2, priority: 1 }],
+  });
+  assert.strictEqual(layout.grid.columns, 12);
+  assert.strictEqual(layout.grid.rows, 9);
+  assert.deepStrictEqual(layout.icons.map((item) => [item.col, item.row]), [[11, 8], [10, 8]]);
+});
+
+run("top-left anchor is literal in custom preferences", () => {
+  const layout = planLayout([icon(0, "A", 0, 0)], { mode: "custom", blocks: [uncategorizedBlock()] });
+  assert.strictEqual(layout.icons[0].col, 0);
+  assert.strictEqual(layout.icons[0].row, 0);
+});
+
+run("rejects explicit cells outside the grid", () => {
+  assert.throws(
+    () => planLayout([icon(0, "A", 0, 0)], { mode: "custom", blocks: [uncategorizedBlock({ cells: [[99, 0]] })] }),
+    /outside the 1x1 grid/
+  );
+});
+
+run("rejects grid overflow deterministically", () => {
+  assert.throws(
+    () => planLayout([icon(0, "A", 0, 0), icon(1, "B", 0, 0)], {
+      mode: "custom",
+      columns: 1,
+      rows: 1,
+      blocks: [uncategorizedBlock()],
+    }),
+    /Not enough grid cells/
+  );
+});
+
+run("rejects invalid spacing and counts", () => {
+  assert.throws(
+    () => planLayout([icon(0, "A", 0, 0)], { mode: "custom", spacingX: 0, blocks: [uncategorizedBlock()] }),
+    /axis spacing/
+  );
+  assert.throws(
+    () => planLayout([icon(0, "A", 0, 0)], { mode: "custom", columns: 0, blocks: [uncategorizedBlock()] }),
+    /axis count/
+  );
+});
+
+run("mergePreferences rejects unknown modes", () => {
+  assert.throws(() => mergePreferences("definitely-not-a-mode"), /Unknown layout mode/);
+});
+
+run("planning is deterministic", () => {
+  const icons = [
+    icon(0, "A", 0, 0),
+    icon(1, "B", 10, 0),
+    icon(2, "C", 0, 10),
+    icon(3, "D", 10, 10),
+  ];
+  const options = { mode: "custom", blocks: [uncategorizedBlock({ anchor: "bottom-right", direction: "left", width: 3 })] };
+  const first = planLayout(icons, options);
+  const second = planLayout(icons, options);
+  assert.deepStrictEqual(first, second);
+  assertNoCollisions(first);
+});
+
+run("real desktop modes keep all fixture icons collision-free", () => {
+  const icons = Array.from({ length: 24 }, (_, index) => icon(index, `Fixture ${index}`, (index % 6) * 10, Math.floor(index / 6) * 10));
+  for (const mode of ["islands", "lines", "columns", "corners"]) {
+    const layout = planLayout(icons, mergePreferences(mode));
+    assert.strictEqual(layout.icons.length, icons.length);
+    assertNoCollisions(layout);
+  }
+});

@@ -514,6 +514,10 @@ function Get-ArgValue($Arguments, [string]$Name, $Default = $null) {
     return $Default
 }
 
+function Test-HasArg($Arguments, [string]$Name) {
+    return ($null -ne $Arguments) -and ($Arguments.PSObject.Properties.Name -contains $Name) -and ($null -ne $Arguments.$Name)
+}
+
 function Get-BoolArg($Arguments, [string]$Name, [bool]$Default) {
     $value = Get-ArgValue $Arguments $Name $null
     if ($null -eq $value) { return $Default }
@@ -558,6 +562,101 @@ function Add-UniqueString($List, $Seen, [string]$Value) {
     if (-not $Seen.ContainsKey($key)) {
         $List.Add($Value)
         $Seen[$key] = $true
+    }
+}
+
+function New-DesktopLayoutSnapshot($hwnd) {
+    $icons = @([DesktopIcons]::List())
+    $gridInfo = New-DesktopIconGrid $hwnd @{} $icons
+    return [ordered]@{ version = 1; icons = $icons; grid = $gridInfo.grid }
+}
+
+function Find-NodeExecutable() {
+    $command = Get-Command node -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "Cannot find Node.js executable 'node'. plan_desktop_icon_layout requires Node.js 18+ on PATH, or use optimize_desktop_islands.js manually."
+    }
+    return $command.Source
+}
+
+function Add-NodeArgIfPresent($NodeArgs, $Arguments, [string]$ArgumentName, [string]$CliName) {
+    if (Test-HasArg $Arguments $ArgumentName) {
+        $NodeArgs.Add($CliName)
+        $NodeArgs.Add([string]$Arguments.$ArgumentName)
+    }
+}
+
+function Invoke-DesktopLayoutPlanner($Arguments) {
+    $mode = [string](Get-ArgValue $Arguments "mode" "islands")
+    $inputProvided = Test-HasArg $Arguments "input_path"
+    $outputPath = [string](Get-ArgValue $Arguments "output_path" "desktop-icons-optimized-$mode.json")
+    $resolvedOutput = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputPath)
+    $tempInput = $null
+    $hwnd = [IntPtr]::Zero
+
+    if ($inputProvided) {
+        $resolvedInput = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath([string]$Arguments.input_path)
+    } else {
+        $hwnd = [DesktopIcons]::FindDesktopListView()
+        $snapshot = New-DesktopLayoutSnapshot $hwnd
+        $tempInput = Join-Path ([IO.Path]::GetTempPath()) ("desktop-icons-input-" + [Guid]::NewGuid().ToString("N") + ".json")
+        $snapshot | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tempInput -Encoding UTF8
+        $resolvedInput = $tempInput
+    }
+
+    $node = Find-NodeExecutable
+    $planner = Join-Path $PSScriptRoot "optimize_desktop_islands.js"
+    if (-not (Test-Path -LiteralPath $planner)) { throw "Cannot find optimizer script at $planner." }
+
+    $nodeArgs = New-Object System.Collections.Generic.List[string]
+    $nodeArgs.Add($planner)
+    $nodeArgs.Add("--input")
+    $nodeArgs.Add($resolvedInput)
+    $nodeArgs.Add("--output")
+    $nodeArgs.Add($resolvedOutput)
+    $nodeArgs.Add("--mode")
+    $nodeArgs.Add($mode)
+    if (Test-HasArg $Arguments "preferences_path") {
+        $nodeArgs.Add("--preferences")
+        $nodeArgs.Add($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath([string]$Arguments.preferences_path))
+    }
+    Add-NodeArgIfPresent $nodeArgs $Arguments "columns" "--columns"
+    Add-NodeArgIfPresent $nodeArgs $Arguments "rows" "--rows"
+    Add-NodeArgIfPresent $nodeArgs $Arguments "origin_x" "--origin-x"
+    Add-NodeArgIfPresent $nodeArgs $Arguments "origin_y" "--origin-y"
+    Add-NodeArgIfPresent $nodeArgs $Arguments "spacing_x" "--spacing-x"
+    Add-NodeArgIfPresent $nodeArgs $Arguments "spacing_y" "--spacing-y"
+
+    try {
+        $plannerOutput = & $node @nodeArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Optimizer failed with exit code $LASTEXITCODE`: $($plannerOutput -join "`n")"
+        }
+        $planned = Get-Content -LiteralPath $resolvedOutput -Raw -Encoding UTF8 | ConvertFrom-Json
+        $result = [ordered]@{
+            ok = $true
+            mode = $mode
+            input_path = $resolvedInput
+            output_path = $resolvedOutput
+            count = [int]$planned.icons.Count
+            grid = $planned.grid
+            summary = $planned.summary
+            planner_output = @($plannerOutput)
+        }
+
+        if (Get-BoolArg $Arguments "apply" $false) {
+            if ($hwnd -eq [IntPtr]::Zero) { $hwnd = [DesktopIcons]::FindDesktopListView() }
+            $useIndexDefault = -not $inputProvided
+            $useIndex = if (Test-HasArg $Arguments "use_index") { Get-BoolArg $Arguments "use_index" $useIndexDefault } else { $useIndexDefault }
+            $placement = Invoke-DesktopIconPlacement $hwnd @($planned.icons) $Arguments $useIndex
+            $result["ok"] = [bool]$placement.ok
+            $result["placement"] = $placement
+        }
+        return $result
+    } finally {
+        if ($null -ne $tempInput -and (Test-Path -LiteralPath $tempInput)) {
+            Remove-Item -LiteralPath $tempInput -Force
+        }
     }
 }
 
@@ -910,6 +1009,9 @@ function Invoke-Tool([string]$Name, $Arguments) {
             $placement["icons"] = $targets
             return $placement
         }
+        "plan_desktop_icon_layout" {
+            return (Invoke-DesktopLayoutPlanner $Arguments)
+        }
         "set_desktop_snap_to_grid" {
             $hwnd = [DesktopIcons]::FindDesktopListView()
             $enabled = [bool](Get-ArgValue $Arguments "enabled" $true)
@@ -920,9 +1022,7 @@ function Invoke-Tool([string]$Name, $Arguments) {
             $path = [string](Get-ArgValue $Arguments "path" "desktop-icons-layout.json")
             $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
             $hwnd = [DesktopIcons]::FindDesktopListView()
-            $icons = @([DesktopIcons]::List())
-            $gridInfo = New-DesktopIconGrid $hwnd @{} $icons
-            $payload = [ordered]@{ version = 1; icons = $icons; grid = $gridInfo.grid }
+            $payload = New-DesktopLayoutSnapshot $hwnd
             $payload | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $resolved -Encoding UTF8
             return @{ ok = $true; path = $resolved; count = $payload.icons.Count }
         }
@@ -948,6 +1048,7 @@ $toolSchemas = @(
     [ordered]@{ name = "list_desktop_displays"; description = "List active Windows display monitors, primary and virtual screen bounds, and work areas."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "move_desktop_icon"; description = "Move one desktop icon by exact ListView index or exact icon name."; inputSchema = @{ type = "object"; properties = @{ index = @{ type = "integer" }; name = @{ type = "string" }; x = @{ type = "integer" }; y = @{ type = "integer" } }; required = @("x", "y"); additionalProperties = $false } },
     [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into the detected or specified ListView grid, with optional stabilization passes and verification."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; additionalProperties = $false } },
+    [ordered]@{ name = "plan_desktop_icon_layout"; description = "Plan a deterministic desktop icon layout with the JavaScript optimizer, optionally applying it with stabilized placement."; inputSchema = @{ type = "object"; properties = @{ mode = @{ type = "string"; enum = @("custom", "islands", "lines", "columns", "corners"); default = "islands" }; input_path = @{ type = "string" }; output_path = @{ type = "string" }; preferences_path = @{ type = "string" }; apply = @{ type = "boolean"; default = $false }; use_index = @{ type = "boolean" }; origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; additionalProperties = $false } },
     [ordered]@{ name = "set_desktop_snap_to_grid"; description = "Enable or disable the desktop ListView snap-to-grid style."; inputSchema = @{ type = "object"; properties = @{ enabled = @{ type = "boolean"; default = $true } }; additionalProperties = $false } },
     [ordered]@{ name = "save_desktop_icon_layout"; description = "Save the current desktop icon layout to a JSON file."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string"; default = "desktop-icons-layout.json" } }; additionalProperties = $false } },
     [ordered]@{ name = "restore_desktop_icon_layout"; description = "Restore desktop icon positions from a JSON file saved by save_desktop_icon_layout, with stabilization passes and post-restore verification."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string" }; passes = @{ type = "integer"; default = 3 }; settle_ms = @{ type = "integer"; default = 250 }; tolerance = @{ type = "integer"; default = 2 }; verify = @{ type = "boolean"; default = $true }; disable_redraw = @{ type = "boolean"; default = $true }; disable_auto_arrange = @{ type = "boolean"; default = $true }; restore_auto_arrange = @{ type = "boolean"; default = $false } }; required = @("path"); additionalProperties = $false } }
