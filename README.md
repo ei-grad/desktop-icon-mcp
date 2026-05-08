@@ -53,6 +53,10 @@ command = "npx"
 args = ["-y", "desktop-icon-mcp"]
 ```
 
+Publishing uses GitHub Actions trusted publishing with npm provenance. See
+`docs/publishing.md`; a one-time bootstrap publish is still needed before npm
+lets you configure the trusted publisher for a brand-new package.
+
 Restart Codex after changing MCP server code or config so it loads the current
 tool schemas and process.
 

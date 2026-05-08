@@ -3,15 +3,33 @@
   "version": "0.1.0",
   "description": "MCP server for reading, planning, and arranging Windows desktop icons.",
   "main": "src/server.js",
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/desktop_icon_helper.ps1",
+    "desktop_icon_mcp.ps1",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "desktop-icon-mcp": "./bin/desktop-icon-mcp.js",
     "desktop-icon-plan": "./bin/desktop-icon-plan.js"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "desktop",
+    "windows",
+    "icons"
+  ],
   "scripts": {
     "test": "node test_optimizer.js && node test_tools.js",
     "test:optimizer": "node test_optimizer.js",
     "test:tools": "node test_tools.js",
     "smoke:js": "node smoke_test_js.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18"

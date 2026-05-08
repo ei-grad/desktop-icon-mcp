@@ -1,0 +1,74 @@
+name: Publish Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Verify release metadata
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const repoUrl = typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;
+          const expectedRepoUrl = `git+${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}.git`;
+          if (!repoUrl) {
+            console.error(`package.json must include repository.url before publishing: ${expectedRepoUrl}`);
+            process.exit(1);
+          }
+          if (repoUrl !== expectedRepoUrl) {
+            console.error(`package.json repository.url must exactly match ${expectedRepoUrl}`);
+            console.error(`Current repository.url: ${repoUrl}`);
+            process.exit(1);
+          }
+          if (process.env.GITHUB_REF_TYPE === "tag") {
+            const expectedTag = `v${pkg.version}`;
+            if (process.env.GITHUB_REF_NAME !== expectedTag) {
+              console.error(`Tag ${process.env.GITHUB_REF_NAME} does not match package version ${pkg.version}; expected ${expectedTag}`);
+              process.exit(1);
+            }
+          }
+          NODE
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - run: npm run build --if-present
+
+      - run: npm test
+
+      - name: Inspect package contents
+        run: npm pack --dry-run
+
+      - name: Publish to npm with trusted publishing
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish --access public
