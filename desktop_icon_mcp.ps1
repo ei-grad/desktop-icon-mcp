@@ -30,6 +30,12 @@ public static class DesktopIcons {
     const int SMTO_NORMAL = 0x0000;
     const int SM_CXSCREEN = 0;
     const int SM_CYSCREEN = 1;
+    const int SM_XVIRTUALSCREEN = 76;
+    const int SM_YVIRTUALSCREEN = 77;
+    const int SM_CXVIRTUALSCREEN = 78;
+    const int SM_CYVIRTUALSCREEN = 79;
+    const int SM_CMONITORS = 80;
+    const int MONITORINFOF_PRIMARY = 0x00000001;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT {
@@ -43,6 +49,16 @@ public static class DesktopIcons {
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFOEX {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public int dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -86,8 +102,24 @@ public static class DesktopIcons {
         public int height { get; set; }
     }
 
+    public class DisplayInfo {
+        public string handle { get; set; }
+        public string deviceName { get; set; }
+        public bool primary { get; set; }
+        public RectInfo monitor_rect { get; set; }
+        public RectInfo work_rect { get; set; }
+    }
+
+    public class DisplaySnapshot {
+        public int monitor_count { get; set; }
+        public RectInfo primary_screen { get; set; }
+        public RectInfo virtual_screen { get; set; }
+        public List<DisplayInfo> monitors { get; set; }
+    }
+
     delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+    delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -122,6 +154,12 @@ public static class DesktopIcons {
     [DllImport("user32.dll")]
     static extern int GetSystemMetrics(int nIndex);
 
+    [DllImport("user32.dll")]
+    static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
 
@@ -152,6 +190,17 @@ public static class DesktopIcons {
             bottom = rect.Bottom,
             width = rect.Right - rect.Left,
             height = rect.Bottom - rect.Top
+        };
+    }
+
+    static RectInfo RectFromMetrics(int left, int top, int width, int height) {
+        return new RectInfo {
+            left = left,
+            top = top,
+            right = left + width,
+            bottom = top + height,
+            width = width,
+            height = height
         };
     }
 
@@ -216,6 +265,38 @@ public static class DesktopIcons {
             return true;
         }, IntPtr.Zero);
         return windows;
+    }
+
+    public static DisplaySnapshot Displays() {
+        var monitors = new List<DisplayInfo>();
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr hdc, ref RECT rect, IntPtr data) => {
+            var info = new MONITORINFOEX();
+            info.cbSize = Marshal.SizeOf(typeof(MONITORINFOEX));
+            info.szDevice = new string('\0', 32);
+            if (GetMonitorInfo(monitor, ref info)) {
+                monitors.Add(new DisplayInfo {
+                    handle = "0x" + monitor.ToInt64().ToString("X"),
+                    deviceName = (info.szDevice ?? "").TrimEnd('\0'),
+                    primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                    monitor_rect = ToRectInfo(info.rcMonitor),
+                    work_rect = ToRectInfo(info.rcWork)
+                });
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        int primaryWidth = GetSystemMetrics(SM_CXSCREEN);
+        int primaryHeight = GetSystemMetrics(SM_CYSCREEN);
+        int virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int virtualWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int virtualHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        return new DisplaySnapshot {
+            monitor_count = GetSystemMetrics(SM_CMONITORS),
+            primary_screen = RectFromMetrics(0, 0, primaryWidth, primaryHeight),
+            virtual_screen = RectFromMetrics(virtualX, virtualY, virtualWidth, virtualHeight),
+            monitors = monitors
+        };
     }
 
     static IntPtr OpenExplorerProcess(IntPtr hwnd) {
@@ -429,16 +510,27 @@ function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
     if ($stepX -le 0) { $stepX = 1 }
     if ($stepY -le 0) { $stepY = 1 }
 
+    $maxIconCol = 0
+    $maxIconRow = 0
+    foreach ($icon in $Icons) {
+        $col = [int][Math]::Round(([double]([int]$icon.x - $originX)) / $stepX)
+        $row = [int][Math]::Round(([double]([int]$icon.y - $originY)) / $stepY)
+        if ($col -gt $maxIconCol) { $maxIconCol = $col }
+        if ($row -gt $maxIconRow) { $maxIconRow = $row }
+    }
+
     $columnsArg = Get-ArgValue $Arguments "columns" $null
     if ($null -eq $columnsArg) {
-        $columns = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopWidth($hwnd) - $originX)) / $stepX))
+        $viewportColumns = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopWidth($hwnd) - $originX)) / $stepX))
+        $columns = [Math]::Max($viewportColumns, $maxIconCol + 1)
     } else {
         $columns = [Math]::Max(1, [int]$columnsArg)
     }
 
     $rowsArg = Get-ArgValue $Arguments "rows" $null
     if ($null -eq $rowsArg) {
-        $rows = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopHeight($hwnd) - $originY)) / $stepY))
+        $viewportRows = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopHeight($hwnd) - $originY)) / $stepY))
+        $rows = [Math]::Max($viewportRows, $maxIconRow + 1)
     } else {
         $rows = [Math]::Max(1, [int]$rowsArg)
     }
@@ -480,6 +572,10 @@ function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
         spacing_y = [int]$stepY
         columns = [int]$columns
         rows = [int]$rows
+        viewport_columns = [int]([Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopWidth($hwnd) - $originX)) / $stepX)))
+        viewport_rows = [int]([Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopHeight($hwnd) - $originY)) / $stepY)))
+        icon_extent_columns = [int]($maxIconCol + 1)
+        icon_extent_rows = [int]($maxIconRow + 1)
         total_slots = [int]($columns * $rows)
         last_x = [int]($originX + (($columns - 1) * $stepX))
         last_y = [int]($originY + (($rows - 1) * $stepY))
@@ -492,6 +588,7 @@ function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
         desktop = [ordered]@{
             client_rect = $clientRect
             window_rect = $windowRect
+            displays = [DesktopIcons]::Displays()
         }
         grid = $grid
         occupied_cells = $occupied
@@ -536,6 +633,9 @@ function Invoke-Tool([string]$Name, $Arguments) {
         }
         "diagnose_desktop_icon_host" {
             return @{ windows = [DesktopIcons]::DiagnoseDesktopHosts() }
+        }
+        "list_desktop_displays" {
+            return @{ displays = [DesktopIcons]::Displays() }
         }
         "move_desktop_icon" {
             $hwnd = [DesktopIcons]::FindDesktopListView()
@@ -618,6 +718,7 @@ $toolSchemas = @(
     [ordered]@{ name = "list_desktop_icons"; description = "List Windows desktop icons with their ListView index and x/y position."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "describe_desktop_icon_grid"; description = "Describe the desktop ListView grid: rects, origin, spacing, rows, columns, occupied cells, and optional full cell map."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; include_cells = @{ type = "boolean"; default = $false } }; additionalProperties = $false } },
     [ordered]@{ name = "diagnose_desktop_icon_host"; description = "Show Progman and WorkerW windows and child classes for desktop icon host troubleshooting."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
+    [ordered]@{ name = "list_desktop_displays"; description = "List active Windows display monitors, primary and virtual screen bounds, and work areas."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "move_desktop_icon"; description = "Move one desktop icon by exact ListView index or exact icon name."; inputSchema = @{ type = "object"; properties = @{ index = @{ type = "integer" }; name = @{ type = "string" }; x = @{ type = "integer" }; y = @{ type = "integer" } }; required = @("x", "y"); additionalProperties = $false } },
     [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into the detected or specified ListView grid."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" } }; additionalProperties = $false } },
     [ordered]@{ name = "set_desktop_snap_to_grid"; description = "Enable or disable the desktop ListView snap-to-grid style."; inputSchema = @{ type = "object"; properties = @{ enabled = @{ type = "boolean"; default = $true } }; additionalProperties = $false } },
