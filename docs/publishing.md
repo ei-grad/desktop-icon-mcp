@@ -26,9 +26,10 @@ Before the first publish:
    publish desktop-icon-mcp@0.1.0
    ```
 
-The bootstrap workflow runs tests, checks package contents, injects the exact
-GitHub `repository`, `homepage`, and `bugs` metadata into the publish-time
-`package.json`, then runs `npm publish --provenance --access public`.
+The bootstrap workflow runs on a GitHub-hosted Windows runner, runs tests,
+checks package contents, injects the exact GitHub `repository`, `homepage`, and
+`bugs` metadata into the publish-time `package.json`, then runs `npm publish
+--provenance --access public`.
 
 ## Enable Trusted Publishing
 
@@ -58,8 +59,8 @@ and delete the `NPM_TOKEN` GitHub secret.
 
 The workflow verifies that `refs/tags/vX.Y.Z` matches `package.json#version`.
 It also injects exact GitHub `repository`, `homepage`, and `bugs` metadata into
-the publish-time `package.json`. It uses a GitHub-hosted runner, Node 24,
-`id-token: write`, no npm publish token, and `npm publish --access public`.
+the publish-time `package.json`. It uses a GitHub-hosted Windows runner, Node
+24, `id-token: write`, no npm publish token, and `npm publish --access public`.
 
 ## Provenance
 
