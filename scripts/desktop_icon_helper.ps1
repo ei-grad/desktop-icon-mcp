@@ -31,6 +31,12 @@ function Invoke-HelperCommand([string]$Command, $Arguments) {
         "list_displays" {
             return @{ displays = [DesktopIcons]::Displays() }
         }
+        "list_screenshot_formats" {
+            return (Get-DesktopScreenshotFormats)
+        }
+        "capture_screenshot" {
+            return (Invoke-DesktopScreenshot $Arguments)
+        }
         "move_icon" {
             $hwnd = [DesktopIcons]::FindDesktopListView()
             $indexArg = Get-ArgValue $Arguments "index" -1

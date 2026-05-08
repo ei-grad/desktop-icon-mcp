@@ -39,11 +39,19 @@ const planOptions = {
   ...placementOptions,
 };
 
+const screenshotOptions = {
+  path: { type: "string", default: "desktop-screenshot.jpg" },
+  format: { type: "string", enum: ["jpg", "jpeg", "png", "webp"], default: "jpg" },
+  quality: { type: "integer", minimum: 1, maximum: 100, default: 82 },
+};
+
 const toolSchemas = [
   { name: "list_desktop_icons", description: "List Windows desktop icons with their ListView index and x/y position.", inputSchema: schema() },
   { name: "describe_desktop_icon_grid", description: "Describe the desktop ListView grid, rects, display metadata, occupied cells, and optional full cell map.", inputSchema: schema({ ...gridOptions, include_cells: { type: "boolean", default: false } }) },
   { name: "diagnose_desktop_icon_host", description: "Show Progman and WorkerW windows and child classes for desktop icon host troubleshooting.", inputSchema: schema() },
   { name: "list_desktop_displays", description: "List active Windows display monitors, primary and virtual screen bounds, and work areas.", inputSchema: schema() },
+  { name: "list_desktop_screenshot_formats", description: "List screenshot image formats supported by the current Windows helper runtime.", inputSchema: schema() },
+  { name: "capture_desktop_screenshot", description: "Capture a compressed screenshot of the Windows desktop ListView to a file without capturing foreground windows.", inputSchema: schema(screenshotOptions) },
   { name: "move_desktop_icon", description: "Move one desktop icon by exact ListView index or exact icon name.", inputSchema: schema({ index: { type: "integer" }, name: { type: "string" }, x: { type: "integer" }, y: { type: "integer" } }, ["x", "y"]) },
   { name: "arrange_desktop_icons_grid", description: "Arrange desktop icons into the detected or specified ListView grid, with optional stabilization passes and verification.", inputSchema: schema({ ...gridOptions, order_by: { type: "string", enum: ["current", "name"], default: "current" }, ...placementOptions }) },
   { name: "plan_desktop_icon_layout", description: "Plan a deterministic desktop icon layout with the JavaScript optimizer, optionally applying it with stabilized placement.", inputSchema: schema(planOptions) },
@@ -171,6 +179,14 @@ function createToolHandlers(options = {}) {
           return helper("diagnose_host", {});
         case "list_desktop_displays":
           return helper("list_displays", {});
+        case "list_desktop_screenshot_formats":
+          return helper("list_screenshot_formats", {});
+        case "capture_desktop_screenshot": {
+          const format = (args.format || "jpg").toLowerCase();
+          const extension = format === "png" || format === "webp" ? format : "jpg";
+          const targetPath = resolvePath(args.path || `desktop-screenshot.${extension}`, cwd);
+          return helper("capture_screenshot", { ...args, path: targetPath });
+        }
         case "move_desktop_icon":
           return helper("move_icon", args);
         case "arrange_desktop_icons_grid": {

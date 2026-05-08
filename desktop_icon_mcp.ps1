@@ -42,6 +42,7 @@ public static class DesktopIcons {
     const int SM_CYVIRTUALSCREEN = 79;
     const int SM_CMONITORS = 80;
     const int MONITORINFOF_PRIMARY = 0x00000001;
+    const uint PW_RENDERFULLCONTENT = 0x00000002;
     static bool dpiAwarenessAttempted = false;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -177,6 +178,9 @@ public static class DesktopIcons {
 
     [DllImport("user32.dll")]
     static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
     [DllImport("user32.dll")]
     static extern int GetSystemMetrics(int nIndex);
@@ -518,6 +522,11 @@ public static class DesktopIcons {
         return new RectInfo { left = 0, top = 0, right = width, bottom = height, width = width, height = height };
     }
 
+    public static bool RenderWindowToDeviceContext(IntPtr hwnd, IntPtr hdc) {
+        EnsureDpiAwareness();
+        return PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT);
+    }
+
     public static int DesktopWidth(IntPtr hwnd) {
         RectInfo rect = ClientRect(hwnd);
         if (rect.width > 0) return rect.width;
@@ -595,6 +604,205 @@ function Get-BoolArg($Arguments, [string]$Name, [bool]$Default) {
     if ($value -is [bool]) { return [bool]$value }
     if ($value -is [string]) { return [bool]::Parse($value) }
     return [bool]$value
+}
+
+function Resolve-DesktopScreenshotTarget($Arguments) {
+    [DesktopIcons]::EnsureDpiAwareness()
+    $hwnd = [DesktopIcons]::FindDesktopListView()
+    $rect = [DesktopIcons]::WindowRect($hwnd)
+    $clientRect = [DesktopIcons]::ClientRect($hwnd)
+
+    if ($null -eq $rect -or [int]$rect.width -le 0 -or [int]$rect.height -le 0) {
+        throw "Cannot determine desktop screenshot bounds."
+    }
+
+    return [ordered]@{
+        hwnd = $hwnd
+        handle = "0x" + $hwnd.ToInt64().ToString("X")
+        source = "desktop_listview"
+        rect = [ordered]@{
+            left = [int]$rect.left
+            top = [int]$rect.top
+            right = [int]$rect.right
+            bottom = [int]$rect.bottom
+            width = [int]$rect.width
+            height = [int]$rect.height
+        }
+        client_rect = [ordered]@{
+            left = [int]$clientRect.left
+            top = [int]$clientRect.top
+            right = [int]$clientRect.right
+            bottom = [int]$clientRect.bottom
+            width = [int]$clientRect.width
+            height = [int]$clientRect.height
+        }
+        displays = [DesktopIcons]::Displays()
+    }
+}
+
+function Resolve-DesktopScreenshotFormat($Arguments, [string]$ResolvedPath) {
+    $value = [string](Get-ArgValue $Arguments "format" "")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        switch ([IO.Path]::GetExtension($ResolvedPath).ToLowerInvariant()) {
+            ".png" { return "png" }
+            ".webp" { return "webp" }
+            default { return "jpg" }
+        }
+    }
+
+    switch ($value.Trim().ToLowerInvariant()) {
+        "jpg" { return "jpg" }
+        "jpeg" { return "jpg" }
+        "png" { return "png" }
+        "webp" { return "webp" }
+        default { throw "format must be 'jpg', 'jpeg', 'png', or 'webp'." }
+    }
+}
+
+function Get-DesktopScreenshotQuality($Arguments) {
+    $quality = [int](Get-ArgValue $Arguments "quality" 82)
+    if ($quality -lt 1 -or $quality -gt 100) {
+        throw "quality must be an integer from 1 to 100."
+    }
+    return $quality
+}
+
+function Get-ImageEncoder([string]$MimeType) {
+    foreach ($encoder in [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()) {
+        if ([string]::Equals($encoder.MimeType, $MimeType, [StringComparison]::OrdinalIgnoreCase)) {
+            return $encoder
+        }
+    }
+    throw "No System.Drawing encoder available for $MimeType."
+}
+
+function Get-DesktopScreenshotFormats {
+    Add-Type -AssemblyName System.Drawing
+
+    $definitions = @(
+        [ordered]@{ name = "jpg"; aliases = @("jpeg"); mime_type = "image/jpeg"; extensions = @(".jpg", ".jpeg"); lossy = $true; quality_supported = $true; default_quality = 82 },
+        [ordered]@{ name = "png"; aliases = @(); mime_type = "image/png"; extensions = @(".png"); lossy = $false; quality_supported = $false; default_quality = $null },
+        [ordered]@{ name = "webp"; aliases = @(); mime_type = "image/webp"; extensions = @(".webp"); lossy = $true; quality_supported = $true; default_quality = 82 }
+    )
+
+    $formats = New-Object System.Collections.Generic.List[object]
+    $supported = New-Object System.Collections.Generic.List[string]
+    foreach ($definition in $definitions) {
+        $encoder = $null
+        $errorMessage = $null
+        try {
+            $encoder = Get-ImageEncoder ([string]$definition.mime_type)
+        } catch {
+            $errorMessage = $_.Exception.Message
+        }
+
+        $isSupported = $null -ne $encoder
+        if ($isSupported) { $supported.Add([string]$definition.name) }
+        $formats.Add([ordered]@{
+            name = [string]$definition.name
+            aliases = @($definition.aliases)
+            mime_type = [string]$definition.mime_type
+            extensions = @($definition.extensions)
+            supported = [bool]$isSupported
+            source = if ($isSupported) { "system_drawing_encoder" } else { "missing_encoder" }
+            encoder = if ($isSupported) { [string]$encoder.FormatDescription } else { $null }
+            lossy = [bool]$definition.lossy
+            quality_supported = [bool]$definition.quality_supported
+            default_quality = $definition.default_quality
+            error = $errorMessage
+        })
+    }
+
+    return [ordered]@{
+        default_format = "jpg"
+        default_quality = 82
+        formats = $formats
+        supported_formats = @($supported)
+    }
+}
+
+function Save-DesktopScreenshotBitmap($Bitmap, [string]$Path, [string]$Format, [int]$Quality) {
+    if ($Format -eq "png") {
+        $Bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        return [ordered]@{ format = "png"; mime_type = "image/png"; quality = $null }
+    }
+
+    $mimeType = if ($Format -eq "webp") { "image/webp" } else { "image/jpeg" }
+    $encoder = Get-ImageEncoder $mimeType
+    $encoderParameter = $null
+    $encoderParameters = $null
+    try {
+        $encoderParameter = [System.Drawing.Imaging.EncoderParameter]::new([System.Drawing.Imaging.Encoder]::Quality, [long]$Quality)
+        $encoderParameters = [System.Drawing.Imaging.EncoderParameters]::new(1)
+        $encoderParameters.Param[0] = $encoderParameter
+        $Bitmap.Save($Path, $encoder, $encoderParameters)
+    } finally {
+        if ($null -ne $encoderParameters) { $encoderParameters.Dispose() }
+        if ($null -ne $encoderParameter) { $encoderParameter.Dispose() }
+    }
+
+    return [ordered]@{ format = $Format; mime_type = $mimeType; quality = [int]$Quality }
+}
+
+function Invoke-DesktopScreenshot($Arguments) {
+    [DesktopIcons]::EnsureDpiAwareness()
+    Add-Type -AssemblyName System.Drawing
+
+    $formatHint = [string](Get-ArgValue $Arguments "format" "jpg")
+    $defaultExtension = switch ($formatHint.Trim().ToLowerInvariant()) {
+        "png" { "png" }
+        "webp" { "webp" }
+        default { "jpg" }
+    }
+    $path = [string](Get-ArgValue $Arguments "path" "desktop-screenshot.$defaultExtension")
+    if ([string]::IsNullOrWhiteSpace($path)) { throw "path must not be empty." }
+    $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
+    $directory = [IO.Path]::GetDirectoryName($resolved)
+    if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory)) {
+        [void](New-Item -ItemType Directory -Path $directory -Force)
+    }
+
+    $format = Resolve-DesktopScreenshotFormat $Arguments $resolved
+    $quality = Get-DesktopScreenshotQuality $Arguments
+    $capture = Resolve-DesktopScreenshotTarget $Arguments
+    $rect = $capture.rect
+    $bitmap = $null
+    $graphics = $null
+    $hdc = [IntPtr]::Zero
+    try {
+        $bitmap = New-Object System.Drawing.Bitmap -ArgumentList @([int]$rect.width, [int]$rect.height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.Clear([System.Drawing.Color]::Transparent)
+        $hdc = $graphics.GetHdc()
+        $rendered = [DesktopIcons]::RenderWindowToDeviceContext($capture.hwnd, $hdc)
+        $graphics.ReleaseHdc($hdc)
+        $hdc = [IntPtr]::Zero
+        if (-not $rendered) { throw "PrintWindow failed while rendering the desktop ListView." }
+        $saveInfo = Save-DesktopScreenshotBitmap $bitmap $resolved $format $quality
+    } finally {
+        if ($hdc -ne [IntPtr]::Zero -and $null -ne $graphics) { $graphics.ReleaseHdc($hdc) }
+        if ($null -ne $graphics) { $graphics.Dispose() }
+        if ($null -ne $bitmap) { $bitmap.Dispose() }
+    }
+
+    $file = Get-Item -LiteralPath $resolved
+    return [ordered]@{
+        ok = $true
+        path = $resolved
+        source = [string]$capture.source
+        handle = [string]$capture.handle
+        capture_method = "PrintWindow"
+        rect = $rect
+        client_rect = $capture.client_rect
+        width = [int]$rect.width
+        height = [int]$rect.height
+        format = [string]$saveInfo.format
+        mime_type = [string]$saveInfo.mime_type
+        quality = $saveInfo.quality
+        bytes = [int64]$file.Length
+        supported_formats = @((Get-DesktopScreenshotFormats).supported_formats)
+        displays = $capture.displays
+    }
 }
 
 function New-IconLookup($Icons) {

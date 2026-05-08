@@ -27,6 +27,50 @@ run("tool schemas include JS planner alias", async () => {
   const tools = createToolHandlers({ helper: async () => ({}) });
   assert(tools.schemas.some((tool) => tool.name === "plan_and_apply_desktop_icon_layout"));
   assert(tools.schemas.some((tool) => tool.name === "plan_desktop_icon_layout"));
+  assert(tools.schemas.some((tool) => tool.name === "list_desktop_screenshot_formats"));
+  const screenshot = tools.schemas.find((tool) => tool.name === "capture_desktop_screenshot");
+  assert(screenshot);
+  assert.strictEqual(screenshot.inputSchema.properties.path.default, "desktop-screenshot.jpg");
+  assert(screenshot.inputSchema.properties.format.enum.includes("webp"));
+});
+
+run("list_desktop_screenshot_formats calls helper", async () => {
+  const calls = [];
+  const tools = createToolHandlers({
+    helper: async (command, args) => {
+      calls.push({ command, args });
+      return { default_format: "jpg", supported_formats: ["jpg", "png"] };
+    },
+  });
+
+  const result = await tools.call("list_desktop_screenshot_formats", {});
+  assert.deepStrictEqual(result.supported_formats, ["jpg", "png"]);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].command, "list_screenshot_formats");
+  assert.deepStrictEqual(calls[0].args, {});
+});
+
+run("capture_desktop_screenshot resolves output path and calls helper", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-icon-tools-"));
+  const output = path.join(temp, "screens", "desktop.jpg");
+  const calls = [];
+  const tools = createToolHandlers({
+    cwd: temp,
+    helper: async (command, args) => {
+      calls.push({ command, args });
+      return { ok: true, path: args.path, source: "desktop_listview", format: args.format || "jpg", quality: args.quality || 82 };
+    },
+  });
+
+  const result = await tools.call("capture_desktop_screenshot", { path: path.join("screens", "desktop.jpg"), quality: 70 });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.path, output);
+  assert.strictEqual(result.quality, 70);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].command, "capture_screenshot");
+  assert.strictEqual(calls[0].args.path, output);
+  assert.strictEqual(calls[0].args.quality, 70);
+  assert.strictEqual(calls[0].args.target, undefined);
 });
 
 run("plan_desktop_icon_layout works from input_path without helper mutation", async () => {

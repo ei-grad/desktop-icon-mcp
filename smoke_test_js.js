@@ -50,6 +50,8 @@ async function main() {
     "describe_desktop_icon_grid",
     "diagnose_desktop_icon_host",
     "list_desktop_displays",
+    "list_desktop_screenshot_formats",
+    "capture_desktop_screenshot",
     "move_desktop_icon",
     "arrange_desktop_icons_grid",
     "plan_desktop_icon_layout",

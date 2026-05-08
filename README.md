@@ -17,6 +17,8 @@ Windows helper for Explorer/ListView Win32 operations.
 - `describe_desktop_icon_grid` - report ListView rects, display metadata, grid, occupied cells, and optional full cell map.
 - `diagnose_desktop_icon_host` - inspect Progman/WorkerW host windows.
 - `list_desktop_displays` - list active display monitors, active primary/virtual bounds, and raw system-metric diagnostics.
+- `list_desktop_screenshot_formats` - report screenshot formats supported by the current helper runtime.
+- `capture_desktop_screenshot` - capture the desktop ListView to compressed JPG by default without including foreground windows.
 - `move_desktop_icon` - move one icon by `index` or exact `name`.
 - `arrange_desktop_icons_grid` - arrange all icons in a grid with stabilization and verification.
 - `plan_desktop_icon_layout` - run the deterministic JS optimizer, optionally applying the planned layout.
@@ -34,7 +36,7 @@ Mutating tools return placement diagnostics including `ok`, `mismatches`,
 Clone the repository somewhere stable:
 
 ```powershell
-git clone https://github.com/YOUR-USER/desktop-icon-mcp.git
+git clone <repository-url>
 ```
 
 Add the JS server to Codex MCP config using an absolute path:
@@ -86,6 +88,8 @@ list_icons
 describe_grid
 diagnose_host
 list_displays
+list_screenshot_formats
+capture_screenshot
 move_icon
 set_snap_to_grid
 get_layout_snapshot
@@ -93,6 +97,16 @@ apply_layout
 get_styles
 set_auto_arrange
 ```
+
+`capture_desktop_screenshot` renders the desktop icon ListView HWND with
+`PrintWindow`; it is intentionally not a screen capture, so foreground windows
+are not copied into the image. It writes `desktop-screenshot.jpg` by default and
+accepts `path`, `format` (`jpg`, `jpeg`, `png`, or `webp`), and `quality`
+arguments. Use `list_desktop_screenshot_formats` to see what the current helper
+runtime can actually write. WebP requires a system `System.Drawing` encoder;
+otherwise the helper returns a clear encoder error. The result includes the
+written file path, capture method, desktop window handle, rect metadata, format,
+quality, byte size, supported formats, and display diagnostics.
 
 ## Deterministic Optimizer
 
