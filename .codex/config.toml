@@ -1,0 +1,9 @@
+[mcp_servers.desktop-icons]
+command = "powershell.exe"
+args = [
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  ".\\desktop_icon_mcp.ps1"
+]
