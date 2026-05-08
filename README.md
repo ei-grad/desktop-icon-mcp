@@ -119,6 +119,13 @@ It supports modes:
 - `columns`
 - `corners`
 
+When two or more groups are present, each group is planned as a dense island
+with a one-cell empty frame around its bounding box. The planner treats that
+gap as a hard constraint and then prefers layouts that spread group islands as
+far apart as the grid allows, including using free desktop corners. If no
+layout can satisfy the gap, the planner fails with a clear message to reduce
+the number of groups or choose a different layout mode/preferences.
+
 From MCP, use `plan_desktop_icon_layout`:
 
 ```json
