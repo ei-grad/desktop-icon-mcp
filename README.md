@@ -8,6 +8,7 @@ send standard ListView messages to move icons. No packages are required.
 ## Tools
 
 - `list_desktop_icons` - list icon names, indexes, and current `x`/`y` positions.
+- `describe_desktop_icon_grid` - report the detected ListView grid, including rects, origin, spacing, rows, columns, occupied cells, and optional full cell map.
 - `diagnose_desktop_icon_host` - inspect Progman/WorkerW host windows if icon discovery fails.
 - `move_desktop_icon` - move one icon by `index` or exact `name`.
 - `arrange_desktop_icons_grid` - arrange all icons in a grid.

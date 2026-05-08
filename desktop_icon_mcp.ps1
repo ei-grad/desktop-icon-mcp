@@ -77,6 +77,15 @@ public static class DesktopIcons {
         public List<string> childClasses { get; set; }
     }
 
+    public class RectInfo {
+        public int left { get; set; }
+        public int top { get; set; }
+        public int right { get; set; }
+        public int bottom { get; set; }
+        public int width { get; set; }
+        public int height { get; set; }
+    }
+
     delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
 
@@ -108,6 +117,9 @@ public static class DesktopIcons {
     static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
     [DllImport("user32.dll")]
+    static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
     static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -130,6 +142,17 @@ public static class DesktopIcons {
 
     static Exception Win32(string name) {
         return new Win32Exception(Marshal.GetLastWin32Error(), name + " failed");
+    }
+
+    static RectInfo ToRectInfo(RECT rect) {
+        return new RectInfo {
+            left = rect.Left,
+            top = rect.Top,
+            right = rect.Right,
+            bottom = rect.Bottom,
+            width = rect.Right - rect.Left,
+            height = rect.Bottom - rect.Top
+        };
     }
 
     static string ClassName(IntPtr hwnd) {
@@ -312,13 +335,32 @@ public static class DesktopIcons {
         return new int[] { x, y };
     }
 
-    public static int DesktopWidth(IntPtr hwnd) {
+    public static RectInfo WindowRect(IntPtr hwnd) {
         RECT rect;
-        if (GetWindowRect(hwnd, out rect)) {
-            int width = rect.Right - rect.Left;
-            if (width > 0) return width;
-        }
+        if (GetWindowRect(hwnd, out rect)) return ToRectInfo(rect);
+        int width = GetSystemMetrics(SM_CXSCREEN);
+        int height = GetSystemMetrics(SM_CYSCREEN);
+        return new RectInfo { left = 0, top = 0, right = width, bottom = height, width = width, height = height };
+    }
+
+    public static RectInfo ClientRect(IntPtr hwnd) {
+        RECT rect;
+        if (GetClientRect(hwnd, out rect)) return ToRectInfo(rect);
+        int width = GetSystemMetrics(SM_CXSCREEN);
+        int height = GetSystemMetrics(SM_CYSCREEN);
+        return new RectInfo { left = 0, top = 0, right = width, bottom = height, width = width, height = height };
+    }
+
+    public static int DesktopWidth(IntPtr hwnd) {
+        RectInfo rect = ClientRect(hwnd);
+        if (rect.width > 0) return rect.width;
         return GetSystemMetrics(SM_CXSCREEN);
+    }
+
+    public static int DesktopHeight(IntPtr hwnd) {
+        RectInfo rect = ClientRect(hwnd);
+        if (rect.height > 0) return rect.height;
+        return GetSystemMetrics(SM_CYSCREEN);
     }
 
     public static void SetSnapToGrid(IntPtr hwnd, bool enabled) {
@@ -355,10 +397,142 @@ function Get-ArgValue($Arguments, [string]$Name, $Default = $null) {
     return $Default
 }
 
+function New-DesktopIconGrid($hwnd, $Arguments, $Icons = $null) {
+    if ($null -eq $Icons) {
+        $Icons = @([DesktopIcons]::List())
+    } else {
+        $Icons = @($Icons)
+    }
+
+    $spacing = [DesktopIcons]::Spacing($hwnd)
+    $clientRect = [DesktopIcons]::ClientRect($hwnd)
+    $windowRect = [DesktopIcons]::WindowRect($hwnd)
+
+    $minX = $null
+    $minY = $null
+    foreach ($icon in $Icons) {
+        if ($null -eq $minX -or [int]$icon.x -lt $minX) { $minX = [int]$icon.x }
+        if ($null -eq $minY -or [int]$icon.y -lt $minY) { $minY = [int]$icon.y }
+    }
+    if ($null -eq $minX) { $minX = 0 }
+    if ($null -eq $minY) { $minY = 0 }
+
+    $originXArg = Get-ArgValue $Arguments "origin_x" $null
+    if ($null -eq $originXArg) { $originXArg = Get-ArgValue $Arguments "margin_x" $null }
+    $originYArg = Get-ArgValue $Arguments "origin_y" $null
+    if ($null -eq $originYArg) { $originYArg = Get-ArgValue $Arguments "margin_y" $null }
+
+    $originX = if ($null -eq $originXArg) { [int]$minX } else { [int]$originXArg }
+    $originY = if ($null -eq $originYArg) { [int]$minY } else { [int]$originYArg }
+    $stepX = [int](Get-ArgValue $Arguments "spacing_x" $spacing[0])
+    $stepY = [int](Get-ArgValue $Arguments "spacing_y" $spacing[1])
+    if ($stepX -le 0) { $stepX = 1 }
+    if ($stepY -le 0) { $stepY = 1 }
+
+    $columnsArg = Get-ArgValue $Arguments "columns" $null
+    if ($null -eq $columnsArg) {
+        $columns = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopWidth($hwnd) - $originX)) / $stepX))
+    } else {
+        $columns = [Math]::Max(1, [int]$columnsArg)
+    }
+
+    $rowsArg = Get-ArgValue $Arguments "rows" $null
+    if ($null -eq $rowsArg) {
+        $rows = [Math]::Max(1, [int][Math]::Floor(([double]([DesktopIcons]::DesktopHeight($hwnd) - $originY)) / $stepY))
+    } else {
+        $rows = [Math]::Max(1, [int]$rowsArg)
+    }
+
+    $occupied = New-Object System.Collections.Generic.List[object]
+    $outside = New-Object System.Collections.Generic.List[object]
+    $occupiedKeys = @{}
+    foreach ($icon in $Icons) {
+        $col = [int][Math]::Round(([double]([int]$icon.x - $originX)) / $stepX)
+        $row = [int][Math]::Round(([double]([int]$icon.y - $originY)) / $stepY)
+        $expectedX = $originX + ($col * $stepX)
+        $expectedY = $originY + ($row * $stepY)
+        $snapped = ([Math]::Abs([int]$icon.x - $expectedX) -le 2) -and ([Math]::Abs([int]$icon.y - $expectedY) -le 2)
+        $inside = $snapped -and $col -ge 0 -and $row -ge 0 -and $col -lt $columns -and $row -lt $rows
+        $cell = [ordered]@{
+            index = [int]$icon.index
+            name = [string]$icon.name
+            x = [int]$icon.x
+            y = [int]$icon.y
+            col = [int]$col
+            row = [int]$row
+            expected_x = [int]$expectedX
+            expected_y = [int]$expectedY
+            snapped = [bool]$snapped
+            inside = [bool]$inside
+        }
+        if ($inside) {
+            $occupied.Add($cell)
+            $occupiedKeys["$col,$row"] = $true
+        } else {
+            $outside.Add($cell)
+        }
+    }
+
+    $grid = [ordered]@{
+        origin_x = [int]$originX
+        origin_y = [int]$originY
+        spacing_x = [int]$stepX
+        spacing_y = [int]$stepY
+        columns = [int]$columns
+        rows = [int]$rows
+        total_slots = [int]($columns * $rows)
+        last_x = [int]($originX + (($columns - 1) * $stepX))
+        last_y = [int]($originY + (($rows - 1) * $stepY))
+        icon_count = [int]$Icons.Count
+        occupied_slots = [int]$occupiedKeys.Count
+        free_slots = [int](($columns * $rows) - $occupiedKeys.Count)
+    }
+
+    $result = [ordered]@{
+        desktop = [ordered]@{
+            client_rect = $clientRect
+            window_rect = $windowRect
+        }
+        grid = $grid
+        occupied_cells = $occupied
+        outside_icons = $outside
+    }
+
+    if ([bool](Get-ArgValue $Arguments "include_cells" $false)) {
+        $cells = New-Object System.Collections.Generic.List[object]
+        for ($row = 0; $row -lt $rows; $row++) {
+            for ($col = 0; $col -lt $columns; $col++) {
+                $key = "$col,$row"
+                $names = @()
+                foreach ($icon in $occupied) {
+                    if ([int]$icon.col -eq $col -and [int]$icon.row -eq $row) {
+                        $names += [string]$icon.name
+                    }
+                }
+                $cells.Add([ordered]@{
+                    col = [int]$col
+                    row = [int]$row
+                    x = [int]($originX + ($col * $stepX))
+                    y = [int]($originY + ($row * $stepY))
+                    occupied = [bool]$occupiedKeys.ContainsKey($key)
+                    icons = $names
+                })
+            }
+        }
+        $result.cells = $cells
+    }
+
+    return $result
+}
+
 function Invoke-Tool([string]$Name, $Arguments) {
     switch ($Name) {
         "list_desktop_icons" {
             return @{ icons = [DesktopIcons]::List() }
+        }
+        "describe_desktop_icon_grid" {
+            $hwnd = [DesktopIcons]::FindDesktopListView()
+            return (New-DesktopIconGrid $hwnd $Arguments)
         }
         "diagnose_desktop_icon_host" {
             return @{ windows = [DesktopIcons]::DiagnoseDesktopHosts() }
@@ -381,26 +555,22 @@ function Invoke-Tool([string]$Name, $Arguments) {
                 $icons = @($icons | Sort-Object -Property name)
             }
 
-            $spacing = [DesktopIcons]::Spacing($hwnd)
-            $marginX = [int](Get-ArgValue $Arguments "margin_x" 16)
-            $marginY = [int](Get-ArgValue $Arguments "margin_y" 16)
-            $stepX = [int](Get-ArgValue $Arguments "spacing_x" $spacing[0])
-            $stepY = [int](Get-ArgValue $Arguments "spacing_y" $spacing[1])
-            $columnsArg = Get-ArgValue $Arguments "columns" $null
-            if ($null -eq $columnsArg) {
-                $columns = [Math]::Max(1, [Math]::Floor(([DesktopIcons]::DesktopWidth($hwnd) - $marginX) / [Math]::Max(1, $stepX)))
-            } else {
-                $columns = [Math]::Max(1, [int]$columnsArg)
-            }
+            $gridInfo = New-DesktopIconGrid $hwnd $Arguments $icons
+            $grid = $gridInfo.grid
+            $originX = [int]$grid.origin_x
+            $originY = [int]$grid.origin_y
+            $stepX = [int]$grid.spacing_x
+            $stepY = [int]$grid.spacing_y
+            $columns = [int]$grid.columns
 
             $moved = New-Object System.Collections.Generic.List[object]
             for ($i = 0; $i -lt $icons.Count; $i++) {
-                $x = $marginX + (($i % $columns) * $stepX)
-                $y = $marginY + ([Math]::Floor($i / $columns) * $stepY)
+                $x = $originX + (($i % $columns) * $stepX)
+                $y = $originY + ([Math]::Floor($i / $columns) * $stepY)
                 [DesktopIcons]::Move($hwnd, [int]$icons[$i].index, [int]$x, [int]$y)
                 $moved.Add([ordered]@{ index = $icons[$i].index; name = $icons[$i].name; x = [int]$x; y = [int]$y })
             }
-            return @{ ok = $true; count = $moved.Count; icons = $moved }
+            return @{ ok = $true; count = $moved.Count; grid = $grid; icons = $moved }
         }
         "set_desktop_snap_to_grid" {
             $hwnd = [DesktopIcons]::FindDesktopListView()
@@ -446,9 +616,10 @@ function Invoke-Tool([string]$Name, $Arguments) {
 
 $toolSchemas = @(
     [ordered]@{ name = "list_desktop_icons"; description = "List Windows desktop icons with their ListView index and x/y position."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
+    [ordered]@{ name = "describe_desktop_icon_grid"; description = "Describe the desktop ListView grid: rects, origin, spacing, rows, columns, occupied cells, and optional full cell map."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; include_cells = @{ type = "boolean"; default = $false } }; additionalProperties = $false } },
     [ordered]@{ name = "diagnose_desktop_icon_host"; description = "Show Progman and WorkerW windows and child classes for desktop icon host troubleshooting."; inputSchema = @{ type = "object"; properties = @{}; additionalProperties = $false } },
     [ordered]@{ name = "move_desktop_icon"; description = "Move one desktop icon by exact ListView index or exact icon name."; inputSchema = @{ type = "object"; properties = @{ index = @{ type = "integer" }; name = @{ type = "string" }; x = @{ type = "integer" }; y = @{ type = "integer" } }; required = @("x", "y"); additionalProperties = $false } },
-    [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into a grid from the top-left corner."; inputSchema = @{ type = "object"; properties = @{ margin_x = @{ type = "integer"; default = 16 }; margin_y = @{ type = "integer"; default = 16 }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" } }; additionalProperties = $false } },
+    [ordered]@{ name = "arrange_desktop_icons_grid"; description = "Arrange desktop icons into the detected or specified ListView grid."; inputSchema = @{ type = "object"; properties = @{ origin_x = @{ type = "integer" }; origin_y = @{ type = "integer" }; margin_x = @{ type = "integer" }; margin_y = @{ type = "integer" }; spacing_x = @{ type = "integer" }; spacing_y = @{ type = "integer" }; columns = @{ type = "integer" }; rows = @{ type = "integer" }; order_by = @{ type = "string"; enum = @("current", "name"); default = "current" } }; additionalProperties = $false } },
     [ordered]@{ name = "set_desktop_snap_to_grid"; description = "Enable or disable the desktop ListView snap-to-grid style."; inputSchema = @{ type = "object"; properties = @{ enabled = @{ type = "boolean"; default = $true } }; additionalProperties = $false } },
     [ordered]@{ name = "save_desktop_icon_layout"; description = "Save the current desktop icon layout to a JSON file."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string"; default = "desktop-icons-layout.json" } }; additionalProperties = $false } },
     [ordered]@{ name = "restore_desktop_icon_layout"; description = "Restore desktop icon positions from a JSON file saved by save_desktop_icon_layout."; inputSchema = @{ type = "object"; properties = @{ path = @{ type = "string" } }; required = @("path"); additionalProperties = $false } }
