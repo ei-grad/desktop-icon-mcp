@@ -56,11 +56,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then
+          if (Test-Path package-lock.json) {
             npm ci
-          else
+          } else {
             npm install
-          fi
+          }
 
       - run: npm run build --if-present
 
