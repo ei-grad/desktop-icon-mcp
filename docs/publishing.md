@@ -7,35 +7,26 @@ trusted publishing with OIDC. The release workflow is
 ## One-Time Bootstrap
 
 npm trusted publishing is configured from an existing package's npmjs.com
-settings, so a brand-new package must be created first. For the first publish,
-use a temporary manual or token-based publish, then switch the package to
-trusted publishing and revoke the token.
+settings, so a brand-new package must be created first. Use the one-time
+bootstrap workflow to publish the first version from GitHub Actions with a
+temporary token and provenance, then switch the package to trusted publishing
+and revoke the token.
 
 Before the first publish:
 
 1. Push this repository to GitHub as a public repository.
-2. Set `package.json.repository.url` to the exact GitHub repository URL:
-
-   ```json
-   {
-     "repository": {
-       "type": "git",
-       "url": "git+https://github.com/OWNER/REPO.git"
-     }
-   }
-   ```
-
-3. Confirm the npm package name is available or rename `package.json#name`.
-4. Publish once:
+2. Confirm the npm package name is available or rename `package.json#name`.
+3. Create a temporary npm automation token and save it as the GitHub Actions
+   secret `NPM_TOKEN`.
+4. Run `.github/workflows/bootstrap-publish.yml` manually with confirmation:
 
    ```powershell
-   npm publish --access public
+   publish desktop-icon-mcp@0.1.0
    ```
 
-If you want provenance on the very first version too, do that first publish
-from GitHub Actions with a temporary `NPM_TOKEN` and `npm publish --provenance
---access public`, then remove that temporary workflow/token. The permanent
-workflow in this repo does not use `NPM_TOKEN`.
+The bootstrap workflow runs tests, checks package contents, injects the exact
+GitHub `repository`, `homepage`, and `bugs` metadata into the publish-time
+`package.json`, then runs `npm publish --provenance --access public`.
 
 ## Enable Trusted Publishing
 
@@ -49,7 +40,8 @@ On npmjs.com, open the package settings and add a trusted publisher:
   environment to the workflow
 
 After a successful trusted publish, set Publishing access to "Require two-factor
-authentication and disallow tokens", then revoke any temporary automation token.
+authentication and disallow tokens", then revoke the temporary automation token
+and delete the `NPM_TOKEN` GitHub secret.
 
 ## Release
 
@@ -63,8 +55,9 @@ authentication and disallow tokens", then revoke any temporary automation token.
    ```
 
 The workflow verifies that `refs/tags/vX.Y.Z` matches `package.json#version`.
-It uses a GitHub-hosted runner, Node 24, `id-token: write`, no npm publish
-token, and `npm publish --access public`.
+It also injects exact GitHub `repository`, `homepage`, and `bugs` metadata into
+the publish-time `package.json`. It uses a GitHub-hosted runner, Node 24,
+`id-token: write`, no npm publish token, and `npm publish --access public`.
 
 ## Provenance
 

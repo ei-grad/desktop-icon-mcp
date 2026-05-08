@@ -5,9 +5,11 @@
   "main": "src/server.js",
   "files": [
     "bin/",
+    "docs/",
     "src/",
     "scripts/desktop_icon_helper.ps1",
     "desktop_icon_mcp.ps1",
+    "optimize_desktop_islands.js",
     "README.md",
     "LICENSE"
   ],

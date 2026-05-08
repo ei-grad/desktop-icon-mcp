@@ -1,16 +1,18 @@
-name: Publish Package
+name: Bootstrap npm Package
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type publish desktop-icon-mcp@0.1.0 to confirm the one-time token bootstrap publish"
+        required: true
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: bootstrap-npm-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -26,26 +28,26 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      - name: Prepare and verify release metadata
+      - name: Prepare and verify bootstrap metadata
         shell: bash
         run: |
           node <<'NODE'
           const fs = require("fs");
           const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-          const expectedRepoUrl = `git+${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}.git`;
+          const expectedConfirm = `publish ${pkg.name}@${pkg.version}`;
+          if (process.env.CONFIRM !== expectedConfirm) {
+            console.error(`Confirmation mismatch. Expected: ${expectedConfirm}`);
+            process.exit(1);
+          }
+          const repoUrl = `git+${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}.git`;
           const repoWebUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`;
-          pkg.repository = { type: "git", url: expectedRepoUrl };
+          pkg.repository = { type: "git", url: repoUrl };
           pkg.homepage = `${repoWebUrl}#readme`;
           pkg.bugs = { url: `${repoWebUrl}/issues` };
-          if (process.env.GITHUB_REF_TYPE === "tag") {
-            const expectedTag = `v${pkg.version}`;
-            if (process.env.GITHUB_REF_NAME !== expectedTag) {
-              console.error(`Tag ${process.env.GITHUB_REF_NAME} does not match package version ${pkg.version}; expected ${expectedTag}`);
-              process.exit(1);
-            }
-          }
           fs.writeFileSync("package.json", `${JSON.stringify(pkg, null, 2)}\n`);
           NODE
+        env:
+          CONFIRM: ${{ inputs.confirm }}
 
       - name: Install dependencies
         run: |
@@ -62,7 +64,7 @@ jobs:
       - name: Inspect package contents
         run: npm pack --dry-run
 
-      - name: Publish to npm with trusted publishing
+      - name: Bootstrap publish to npm with token and provenance
+        run: npm publish --provenance --access public
         env:
-          NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish --access public
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
