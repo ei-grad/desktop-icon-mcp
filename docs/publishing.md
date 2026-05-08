@@ -12,6 +12,8 @@ bootstrap workflow to publish the first version from GitHub Actions with a
 temporary token and provenance, then switch the package to trusted publishing
 and revoke the token.
 
+Repository: `https://github.com/ei-grad/desktop-icon-mcp`
+
 Before the first publish:
 
 1. Push this repository to GitHub as a public repository.
@@ -33,8 +35,8 @@ GitHub `repository`, `homepage`, and `bugs` metadata into the publish-time
 On npmjs.com, open the package settings and add a trusted publisher:
 
 - Provider: GitHub Actions
-- Organization or user: the GitHub owner
-- Repository: the GitHub repo name
+- Organization or user: `ei-grad`
+- Repository: `desktop-icon-mcp`
 - Workflow filename: `publish.yml`
 - Environment name: leave blank unless you also add a matching GitHub
   environment to the workflow

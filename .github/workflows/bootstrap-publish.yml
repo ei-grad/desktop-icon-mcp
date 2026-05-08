@@ -11,6 +11,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  EXPECTED_REPOSITORY: ei-grad/desktop-icon-mcp
+
 concurrency:
   group: bootstrap-npm-${{ github.ref }}
   cancel-in-progress: false
@@ -34,6 +37,10 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          if (process.env.GITHUB_REPOSITORY !== process.env.EXPECTED_REPOSITORY) {
+            console.error(`This workflow may only publish from ${process.env.EXPECTED_REPOSITORY}; got ${process.env.GITHUB_REPOSITORY}`);
+            process.exit(1);
+          }
           const expectedConfirm = `publish ${pkg.name}@${pkg.version}`;
           if (process.env.CONFIRM !== expectedConfirm) {
             console.error(`Confirmation mismatch. Expected: ${expectedConfirm}`);

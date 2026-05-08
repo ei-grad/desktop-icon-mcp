@@ -36,7 +36,7 @@ Mutating tools return placement diagnostics including `ok`, `mismatches`,
 Clone the repository somewhere stable:
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/ei-grad/desktop-icon-mcp.git
 ```
 
 Add the JS server to Codex MCP config using an absolute path:

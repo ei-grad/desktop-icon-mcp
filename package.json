@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "MCP server for reading, planning, and arranging Windows desktop icons.",
   "main": "src/server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ei-grad/desktop-icon-mcp.git"
+  },
+  "homepage": "https://github.com/ei-grad/desktop-icon-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ei-grad/desktop-icon-mcp/issues"
+  },
   "files": [
     "bin/",
     "docs/",

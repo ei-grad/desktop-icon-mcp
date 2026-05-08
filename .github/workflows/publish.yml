@@ -9,6 +9,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  EXPECTED_REPOSITORY: ei-grad/desktop-icon-mcp
+
 concurrency:
   group: publish-npm-${{ github.ref }}
   cancel-in-progress: false
@@ -32,6 +35,10 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          if (process.env.GITHUB_REPOSITORY !== process.env.EXPECTED_REPOSITORY) {
+            console.error(`This workflow may only publish from ${process.env.EXPECTED_REPOSITORY}; got ${process.env.GITHUB_REPOSITORY}`);
+            process.exit(1);
+          }
           const expectedRepoUrl = `git+${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}.git`;
           const repoWebUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`;
           pkg.repository = { type: "git", url: expectedRepoUrl };
