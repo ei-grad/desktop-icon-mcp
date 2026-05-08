@@ -1,50 +1,9 @@
 # Publishing
 
-This package is intended to be published to npm from GitHub Actions using npm
-trusted publishing with OIDC. The release workflow is
+The npm package `desktop-icon-mcp` is published from
+`https://github.com/ei-grad/desktop-icon-mcp` with npm trusted publishing and
+provenance attestations. The release workflow is
 `.github/workflows/publish.yml`.
-
-## One-Time Bootstrap
-
-npm trusted publishing is configured from an existing package's npmjs.com
-settings, so a brand-new package must be created first. Use the one-time
-bootstrap workflow to publish the first version from GitHub Actions with a
-temporary token and provenance, then switch the package to trusted publishing
-and revoke the token.
-
-Repository: `https://github.com/ei-grad/desktop-icon-mcp`
-
-Before the first publish:
-
-1. Push this repository to GitHub as a public repository.
-2. Confirm the npm package name is available or rename `package.json#name`.
-3. Create a temporary npm automation token and save it as the GitHub Actions
-   secret `NPM_TOKEN`.
-4. Run `.github/workflows/bootstrap-publish.yml` manually with confirmation:
-
-   ```powershell
-   publish desktop-icon-mcp@0.1.0
-   ```
-
-The bootstrap workflow runs on a GitHub-hosted Windows runner, runs tests,
-checks package contents, injects the exact GitHub `repository`, `homepage`, and
-`bugs` metadata into the publish-time `package.json`, then runs `npm publish
---provenance --access public`.
-
-## Enable Trusted Publishing
-
-On npmjs.com, open the package settings and add a trusted publisher:
-
-- Provider: GitHub Actions
-- Organization or user: `ei-grad`
-- Repository: `desktop-icon-mcp`
-- Workflow filename: `publish.yml`
-- Environment name: leave blank unless you also add a matching GitHub
-  environment to the workflow
-
-After a successful trusted publish, set Publishing access to "Require two-factor
-authentication and disallow tokens", then revoke the temporary automation token
-and delete the `NPM_TOKEN` GitHub secret.
 
 ## Release
 
@@ -54,6 +13,7 @@ and delete the `NPM_TOKEN` GitHub secret.
 
    ```powershell
    git tag v0.1.1
+   git push origin main
    git push origin v0.1.1
    ```
 
@@ -61,6 +21,20 @@ The workflow verifies that `refs/tags/vX.Y.Z` matches `package.json#version`.
 It also injects exact GitHub `repository`, `homepage`, and `bugs` metadata into
 the publish-time `package.json`. It uses a GitHub-hosted Windows runner, Node
 24, `id-token: write`, no npm publish token, and `npm publish --access public`.
+
+## npm Settings
+
+Trusted publisher settings on npmjs.com:
+
+- Provider: GitHub Actions
+- Organization or user: `ei-grad`
+- Repository: `desktop-icon-mcp`
+- Workflow filename: `publish.yml`
+- Environment name: blank, unless the workflow later adds a matching GitHub
+  environment
+
+No npm publish token is required for regular releases. Keep `NPM_TOKEN` absent
+from GitHub Actions secrets.
 
 ## Provenance
 

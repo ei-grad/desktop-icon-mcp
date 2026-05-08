@@ -1,9 +1,8 @@
 # Desktop Icon MCP
 
-JS-first MCP server for reading, planning, and arranging Windows desktop icons
-from Codex. Node.js owns MCP JSON-RPC, tool schemas, validation, the
-deterministic optimizer, tests, and packaging. PowerShell is kept as a thin
-Windows helper for Explorer/ListView Win32 operations.
+Model Context Protocol server for reading, planning, and arranging Windows
+desktop icons. The server is distributed as a Node.js package and uses a
+PowerShell helper for Explorer/ListView Win32 operations.
 
 ## Requirements
 
@@ -33,21 +32,7 @@ Mutating tools return placement diagnostics including `ok`, `mismatches`,
 
 ## Installation
 
-Clone the repository somewhere stable:
-
-```powershell
-git clone https://github.com/ei-grad/desktop-icon-mcp.git
-```
-
-Add the JS server to Codex MCP config using an absolute path:
-
-```toml
-[mcp_servers.desktop-icons]
-command = "node"
-args = ["C:\\path\\to\\desktop-icon-mcp\\bin\\desktop-icon-mcp.js"]
-```
-
-After npm publication, the intended install shape is:
+Use the published npm package from your MCP client config:
 
 ```toml
 [mcp_servers.desktop-icons]
@@ -55,22 +40,22 @@ command = "npx"
 args = ["-y", "desktop-icon-mcp"]
 ```
 
-Publishing uses GitHub Actions trusted publishing with npm provenance. See
-`docs/publishing.md`; a one-time bootstrap publish is still needed before npm
-lets you configure the trusted publisher for a brand-new package.
+For local development, clone the repository:
 
-Restart Codex after changing MCP server code or config so it loads the current
-tool schemas and process.
+```powershell
+git clone https://github.com/ei-grad/desktop-icon-mcp.git
+```
 
-## Local Codex Config
-
-This project includes `.codex/config.toml` for local development:
+Then point your MCP client at the local entrypoint:
 
 ```toml
 [mcp_servers.desktop-icons]
 command = "node"
-args = [".\\bin\\desktop-icon-mcp.js"]
+args = ["C:\\path\\to\\desktop-icon-mcp\\bin\\desktop-icon-mcp.js"]
 ```
+
+Publishing uses GitHub Actions trusted publishing with npm provenance. See
+`docs/publishing.md`.
 
 ## Architecture
 
